@@ -625,15 +625,35 @@ class H(SimpleHTTPRequestHandler):
                 if not isinstance(i, int) or i not in inv or key not in cats or cats[key]["kind"] != inv[i]["kind"]:
                     raise ValueError("Can't move that file there.")
                 ov = load(OVERRIDES, {})
+                labels = load(os.path.join(DATA, "labels.json"), {})
+                meta = load(os.path.join(DATA, "meta.json"), {})
+                m = meta.setdefault(str(i), {})
+                if str(i) not in ov:  # remember how it was, so Undo can put it back exactly
+                    m["label_was"], m["review_was"] = labels.get(str(i)), m.get("review")
                 ov[str(i)] = key
                 save(OVERRIDES, ov)
-                labels = load(os.path.join(DATA, "labels.json"), {})
                 labels[str(i)] = key
                 save(os.path.join(DATA, "labels.json"), labels)
+                if m.get("review") != "dupe":
+                    m["review"] = None
+                save(os.path.join(DATA, "meta.json"), meta)
+            elif p == "/api/unmove":
+                i = body.get("id")
+                ov = load(OVERRIDES, {})
+                if not isinstance(i, int) or str(i) not in ov:
+                    raise ValueError("Nothing to undo for that file.")
+                del ov[str(i)]
+                save(OVERRIDES, ov)
                 meta = load(os.path.join(DATA, "meta.json"), {})
-                if str(i) in meta and meta[str(i)].get("review") != "dupe":
-                    meta[str(i)]["review"] = None
-                    save(os.path.join(DATA, "meta.json"), meta)
+                m = meta.get(str(i), {})
+                labels = load(os.path.join(DATA, "labels.json"), {})
+                if m.get("label_was"):
+                    labels[str(i)] = m["label_was"]
+                    save(os.path.join(DATA, "labels.json"), labels)
+                if "review_was" in m:
+                    m["review"] = m.pop("review_was")
+                m.pop("label_was", None)
+                save(os.path.join(DATA, "meta.json"), meta)
             elif p == "/api/main_account":
                 acct = body.get("account")
                 inv = load(os.path.join(DATA, "inventory.json"), [])
@@ -687,6 +707,7 @@ class H(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.makedirs(DATA, exist_ok=True)
+    ThreadingHTTPServer.request_queue_size = 128  # the page loads hundreds of thumbnails at once
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     srv.daemon_threads = True
     print(f"Snapsift running at http://127.0.0.1:{PORT}  (Ctrl+C to stop)", flush=True)

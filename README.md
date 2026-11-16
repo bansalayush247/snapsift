@@ -4,9 +4,9 @@ Point Claude at your camera roll, or at several Google accounts' worth of photos
 
 Based on [claude-photo-sorter](https://github.com/kairothq/claude-photo-sorter) by Divy Kairoth (MIT).
 
-![The dashboard sorting a camera roll](docs/preview.gif)
+![Snapsift sorting a camera roll](docs/preview.gif)
 
-*The demo uses drawn placeholder images, not real photos. It was recorded with the original design; Snapsift adds a tools bar (search, accounts, clean up, trips, map, highlights, upload, privacy) and the review folders.*
+*The demo uses drawn placeholder images, not real photos. Try it yourself with `./start.sh --demo`.*
 
 - **Sorts** photos and videos into folders like Selfies, Food, Travel, Screenshots, Talking heads and Screen recordings. Use the standard folders or make your own.
 - **Several Google accounts at once.** Put one Takeout export per account in one folder. Duplicates are found across all of them, your main account's copy is always kept, and every other account gets a **delete list**, plus a storage report per account.
@@ -45,8 +45,10 @@ About 4 minutes for 1,000 photos.
 
 | | |
 |---|---|
+| **⌘K** (or `/`) | Search photos, jump to a folder, trip or tool. `?` shows every shortcut |
 | **Advanced** (before sorting) | Folders, Claude model (Haiku, Sonnet or Opus), year/month subfolders, date fixing, trip albums, second look, try 200 files first |
-| **Search** (press `/`) | Words, folder names, account names, dates like `2023` or `march` |
+| **Search** | Words, folder names, account names, dates like `2023` or `march` |
+| **Overview** | Hover the donut or a legend entry to light up that folder; click to open it |
 | **Accounts** | Storage per account, pick the main account, delete lists |
 | **Clean up** | Duplicates (and Move to Trash), Junk, Private, Not sure, biggest videos |
 | **Trips & events** | Albums of trips and events. "Name them with Claude" |
@@ -54,7 +56,7 @@ About 4 minutes for 1,000 photos.
 | **Highlights** | Best photos of each year plus a slideshow video |
 | **Upload** | Google Photos (one album per folder) or Apple Photos |
 | **Privacy** | What stays and what leaves. "Forget this library" |
-| Click a folder | Browse it. Click a photo to see it full size, then use **Move** if it's in the wrong place. Snapsift remembers and Claude learns from it |
+| Click a folder | Browse it. Tick photos (Shift-click for a range, ⌘A for all) and **Move** them together, with **Undo**. Click a photo for the viewer: filmstrip, double-click to zoom, swipe or ←/→, `i` for details. Snapsift remembers your moves and Claude learns from them |
 
 Sorting the same folder again only looks at new photos.
 

@@ -9,7 +9,7 @@ const REPLAY_MS = (+params.get("d") || 12) * 1000;
 const TOKENS_PER_FILE = 980;
 const $ = id => document.getElementById(id);
 const fmt = n => Math.round(n).toLocaleString("en-US");
-const size = b => b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB";
+const size = b => b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : b >= 1e6 ? Math.round(b / 1e6) + " MB" : b > 0 ? Math.max(1, Math.round(b / 1e3)) + " KB" : "0 MB";
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const roughly = s => s < 50 ? "under a minute" : s < 90 ? "about a minute" : `about ${Math.round(s / 60)} min`;
 const tilde = p => (p || "").replace(/^\/Users\/[^/]+/, "~");
@@ -51,23 +51,36 @@ const ICONS = {
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   stop: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
   minus: '<path d="M5 12h14"/>',
+  spark: '<path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" fill="currentColor" stroke="none"/>',
+  photo: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  disk: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>',
 };
 const svg = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`;
 const icon = n => { const s = el("span", { "data-icon": n }); s.innerHTML = svg(n); return s; };
 const paintIcons = (root = document) => root.querySelectorAll("[data-icon]").forEach(e => { if (!e.firstChild) e.innerHTML = svg(e.dataset.icon); });
-function toast(t) { const e = $("toast"); e.textContent = t; e.classList.add("on"); clearTimeout(e.t); e.t = setTimeout(() => e.classList.remove("on"), 3200); }
-
+function toast(t, label, fn) {
+  const e = $("toast");
+  e.replaceChildren(el("span", {}, t));
+  if (label) e.append(el("button", { onclick: () => { e.classList.remove("on"); fn(); } }, label));
+  e.classList.add("on");
+  clearTimeout(e.t);
+  e.t = setTimeout(() => e.classList.remove("on"), label ? 6500 : 3200);
+}
 /* ---------- theme: one sun / moon button ---------- */
 function setTheme(t) {
   try { localStorage.setItem("theme", t); } catch (e) {}
   document.documentElement.dataset.theme = t;
-  $("theme").innerHTML = svg(t === "dark" ? "sun" : "moon");
+  $("theme").innerHTML = svg(t === "dark" ? "sun" : "moon") + `<span>${t === "dark" ? "Light" : "Dark"}</span>`;
   $("theme").setAttribute("aria-label", t === "dark" ? "Switch to light mode" : "Switch to dark mode");
 }
+const toggleTheme = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 let theme = "light";
 try { theme = localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch (e) {}
 setTheme(theme === "system" ? "light" : theme);
-$("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+$("theme").onclick = () => toggleTheme();
 
 /* ---------- state ---------- */
 let S = {};                                 // server state
@@ -89,18 +102,23 @@ async function api(path, body) {
 }
 const getJSON = f => fetch(BASE + f, { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null);
 
+const PALETTE = ["#7b5cff", "#3d7bff", "#14b8c4", "#12a36b", "#f59e0b", "#ef6b4a", "#e0559a", "#a855f7", "#0ea5e9", "#65a30d", "#f97316", "#0d9488", "#6366f1", "#ca8a04",
+  "#db2777", "#2563eb", "#059669", "#9333ea"];
 function setCats(c) {
   cats = c || [];
+  cats.forEach((x, i) => x.color = PALETTE[i % PALETTE.length]);
   catBy = Object.fromEntries(cats.map(x => [x.key, x]));
-  catBy._dupes = { key: "_dupes", label: "Duplicates", emoji: "🗂️", kind: "review" };
-  catBy._private = { key: "_private", label: "Private", emoji: "🔒", kind: "review" };
-  catBy._junk = { key: "_junk", label: "Junk", emoji: "🗑️", kind: "review" };
-  catBy._unsure = { key: "_unsure", label: "Not sure", emoji: "🤔", kind: "review" };
+  catBy._dupes = { key: "_dupes", label: "Duplicates", emoji: "🗂️", kind: "review", color: "#64748b" };
+  catBy._private = { key: "_private", label: "Private", emoji: "🔒", kind: "review", color: "#e5484d" };
+  catBy._junk = { key: "_junk", label: "Junk", emoji: "🗑️", kind: "review", color: "#8b8fa3" };
+  catBy._unsure = { key: "_unsure", label: "Not sure", emoji: "🤔", kind: "review", color: "#d97706" };
   $("k-ftotal").textContent = cats.length;
 }
 async function loadLibrary(withLabels) {
+  const st = S.steps || {}, has = { "meta.json": !DEMO && st.apply, "events.json": !DEMO && st.events, "report.json": !DEMO && st.report, "trashed.json": !DEMO && S.trashed > 0,
+    "labels.json": DEMO || st.apply, "dupes.json": DEMO || st.dupes, "source.json": true, "inventory.json": true };
   const [inv, lab, dupes, src, meta, ev, rep, trashed] = await Promise.all(
-    ["inventory.json", "labels.json", "dupes.json", "source.json", "meta.json", "events.json", "report.json", "trashed.json"].map(getJSON));
+    ["inventory.json", "labels.json", "dupes.json", "source.json", "meta.json", "events.json", "report.json", "trashed.json"].map(f => has[f] ? getJSON(f) : null));
   dupeIds = new Set((dupes || []).flatMap(g => g.dupes));
   labels = withLabels && lab ? lab : {};
   events = ev || []; report = rep;
@@ -134,25 +152,32 @@ function setHeader() {
   $("total").textContent = fmt(items.length);
   $("btnOpen").hidden = !(mode === "done" && S.sorted);
   $("btnNew").hidden = mode !== "done";
-  $("tools").hidden = mode !== "done" || DEMO;
+  $("libname").textContent = src ? String(src).replace(/\/+$/, "").split("/").pop() || "Snapsift" : "Snapsift";
   $("tAccounts").hidden = !(S.accounts && S.accounts.length > 1);
+  ["tClean", "tTrips", "tMap", "tHigh", "tShare", "tAccounts"].forEach(id => $(id).classList.toggle("locked", mode !== "done" || DEMO));
+  const flagged = items.filter(i => !i.trashed && (i.dupe || i.review)).length;
+  $("nClean").hidden = !(mode === "done" && flagged);
+  $("nClean").textContent = flagged > 99 ? "99+" : flagged;
   $("k-checked-s").textContent = items.length && mode !== "setup" ? size(items.reduce((s, r) => s + r.bytes, 0)) + " in total" : "photos & videos";
   document.body.dataset.mode = mode;
 }
 
 /* ---------- folder cards ---------- */
-function card(c) {
-  const wide = c.key === "_dupes", review = c.kind === "review";
-  const e = el("button", { class: "card" + (wide ? " wide" : "") + (review ? " review" : ""), onclick: () => mode === "setup" ? null : openFolder(c) },
-    el("div", { class: "ch" }, el("span", {}, c.emoji || "📁"), el("span", { class: "name" }, c.label), el("span", { class: "mx-count" }, "0")),
-    el("div", { class: "grid" }, Array.from({ length: wide ? 24 : review ? 4 : 12 }, () => el("div", { class: "slot" }))));
+function card(c, i = 0) {
+  const review = c.kind === "review";
+  const e = el("button", { class: "card" + (review ? " review" : ""), style: `--c:${c.color || "var(--accent)"};--i:${i}`,
+      onclick: () => mode === "setup" ? null : openFolder(c),
+      onmouseenter: () => mode === "done" && focusCat(c), onmouseleave: () => mode === "done" && focusCat(null) },
+    el("div", { class: "ch" }, el("span", { class: "em" }, c.emoji || "📁"), el("span", { class: "name" }, c.label), el("span", { class: "mx-count" }, "0")),
+    el("div", { class: "grid" }, Array.from({ length: review ? 6 : 12 }, () => el("div", { class: "slot" }))));
   Object.assign(c, { el: e, badge: e.querySelector(".mx-count"), slots: [...e.querySelectorAll(".slot")], queued: 0, landed: [] });
   return e;
 }
 function buildCards() {
-  $("photos").replaceChildren(...cats.filter(c => c.kind === "photo").map(card));
-  $("videos").replaceChildren(...cats.filter(c => c.kind === "video").map(card), card(catBy._dupes),
-    el("div", { class: "review-row" }, card(catBy._private), card(catBy._junk), card(catBy._unsure)));
+  $("photos").replaceChildren(...cats.filter(c => c.kind === "photo").map((c, i) => card(c, i)));
+  const vids = cats.filter(c => c.kind === "video");
+  $("videos").replaceChildren(...vids.map((c, i) => card(c, i)), el("div", { class: "sub-h" }, "Review"),
+    ...["_dupes", "_private", "_junk", "_unsure"].map((k, i) => card(catBy[k], vids.length + i)));
   Object.assign(stats, { photos: 0, videos: 0, dupes: 0, saved: 0 });
   released = landed = 0;
   flown.clear();
@@ -248,9 +273,51 @@ function showDone(celebrateNow) {
   document.body.classList.add("is-done");
   $("bigF").textContent = `${cats.length} folders`;
   $("chipD").textContent = `🗂️ ${fmt(stats.dupes)} duplicates`;
-  $("chipS").textContent = `💾 ${size(stats.saved)} freed`;
+  $("chipS").textContent = `💾 ${size(stats.saved)} to free`;
   if (celebrateNow) { countUp($("bigN"), items.length, 900); confetti(); } else $("bigN").textContent = fmt(items.length);
+  $("bigL").textContent = "sorted";
+  renderDonut();
   setPill("live", "Sorted");
+  setHeader();
+}
+const SVGNS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+function renderDonut() {
+  const all = cats.concat(catBy._dupes, catBy._private, catBy._junk, catBy._unsure);
+  const groups = all.map(c => ({ c, n: (c.landed || []).length })).filter(g => g.n);
+  const total = groups.reduce((s, g) => s + g.n, 0) || 1, R = 48, C = 2 * Math.PI * R;
+  const d = $("donut");
+  d.replaceChildren(svgEl("circle", { class: "track", cx: 60, cy: 60, r: R }));
+  let off = 0;
+  groups.forEach((g, i) => {
+    const len = g.n / total * C, gap = groups.length > 1 ? Math.min(1.6, len * .3) : 0;
+    const seg = svgEl("circle", { class: "seg", cx: 60, cy: 60, r: R, stroke: g.c.color, "stroke-dasharray": `${Math.max(.1, len - gap)} ${C}`,
+      style: `--off:${-off}px;--i:${i}`, tabindex: 0, "aria-label": `${g.c.label}: ${g.n}` });
+    seg.addEventListener("mouseenter", () => focusCat(g.c));
+    seg.addEventListener("mouseleave", () => focusCat(null));
+    seg.addEventListener("click", () => openFolder(g.c));
+    g.c.seg = seg;
+    d.append(seg);
+    off += len;
+  });
+  $("legend").replaceChildren(...groups.slice().sort((a, b) => b.n - a.n).slice(0, 8).map(g => {
+    const b = el("button", { style: `--c:${g.c.color}`, onclick: () => openFolder(g.c), onmouseenter: () => focusCat(g.c), onmouseleave: () => focusCat(null) },
+      el("i"), g.c.label, el("b", {}, fmt(g.n)));
+    g.c.leg = b;
+    return b;
+  }));
+}
+function focusCat(c) {
+  const all = cats.concat(catBy._dupes, catBy._private, catBy._junk, catBy._unsure);
+  $("donut").classList.toggle("focus", !!(c && c.seg));
+  all.forEach(x => {
+    if (x.seg) x.seg.classList.toggle("on", x === c);
+    if (x.leg) x.leg.classList.toggle("on", x === c);
+    if (x.el) x.el.classList.toggle("glow", x === c);
+  });
+  if (!document.body.classList.contains("is-done")) return;
+  $("bigN").textContent = fmt(c ? (c.landed || []).length : items.length);
+  $("bigL").textContent = c ? c.label : "sorted";
 }
 function celebrate() {
   const wasLive = run === "live";
@@ -627,8 +694,12 @@ function paintTimer() {
 }
 
 /* ---------- dialogs: edit folders, browse a folder, view a photo, paid confirm ---------- */
-function closeAll() { $("overlay").replaceChildren(); document.removeEventListener("keydown", lbKeys); }
-function overlay(...nodes) { closeAll(); $("overlay").append(...nodes); paintIcons($("overlay")); }
+function closeAll() { $("overlay").replaceChildren(); document.removeEventListener("keydown", lbKeys); setNav("tLibrary"); }
+function overlay(...nodes) {  // replaces whatever is open, keeps the rail's highlight
+  $("overlay").replaceChildren(...nodes);
+  document.removeEventListener("keydown", lbKeys);
+  paintIcons($("overlay"));
+}
 addEventListener("keydown", e => { if (e.key === "Escape" && !document.querySelector(".lightbox")) closeAll(); });
 
 function confirmPaid(n) {
@@ -689,64 +760,91 @@ function openFolders() {
 }
 
 function openFolder(c) {
-  const all = items.filter(i => inFolder(c, i));
-  const grid = el("div", { class: "browse" });
-  let shown = 0;
-  const more = () => {
-    grid.querySelector(".more")?.remove();
-    const from = shown;
-    all.slice(from, from + 120).forEach((it, k) => grid.append(el("button", { onclick: () => lightbox(all, from + k), "aria-label": it.name },
-      el("img", { src: it.src, alt: "", loading: "lazy" }), it.kind === "video" ? el("span", { class: "vid" }, "▶ " + (it.duration ? Math.round(it.duration) + "s" : "video")) : null)));
-    shown += 120;
-    if (shown < all.length) grid.append(el("button", { class: "mx-btn more", onclick: more }, `Show ${fmt(Math.min(120, all.length - shown))} more`));
-  };
-  more();
-  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
-    el("div", { class: "fb-dialog wide", role: "dialog", "aria-label": c.label },
-      el("div", { class: "fb-head" }, el("h2", {}, c.emoji || "📁", ` ${c.label}`, el("span", { class: "mx-count" }, fmt(all.length))),
-        el("div", { class: "acts" },
-          S.sorted && !DEMO ? el("button", { class: "mx-btn small", onclick: () => api("/api/open", { folder: c.key }).catch(() => {}) }, icon("folder"), "Open in Finder") : null,
-          el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x")))),
-      all.length ? grid : el("p", { class: "mx-empty", style: "padding:22px" }, "Nothing in this folder yet."))));
+  setNav(null);
+  browse(`${c.emoji || "📁"} ${c.label}`, () => items.filter(i => !i.trashed && inFolder(c, i)), {
+    empty: "Nothing in this folder yet.",
+    actions: S.sorted && !DEMO ? [el("button", { class: "mx-btn small", onclick: () => api("/api/open", { folder: c.key }).catch(() => {}) }, icon("folder"), "Open in Finder")] : [] });
 }
-
 let lbKeys = () => {};
-function lightbox(list, i) {
+function lightbox(list, i, opts = {}) {
   const it = list[i];
+  if (!it) return;
+  const go = j => j >= 0 && j < list.length && lightbox(list, j, opts);
   const full = DEMO ? it.src : `/api/file/${it.id}`;
-  const media = it.kind === "video" && !DEMO ? el("video", { src: full, controls: true, autoplay: true, playsinline: true, poster: it.src }) : el("img", { src: full, alt: it.name });
-  const move = el("select", { class: "mx-select", "aria-label": "Move to folder", onchange: async e => {
+  const media = el("div", { class: "media" });
+  const node = it.kind === "video" && !DEMO ? el("video", { src: full, controls: true, autoplay: true, playsinline: true, poster: it.src })
+    : el("img", { src: full, alt: it.name, draggable: "false" });
+  media.append(node);
+  let z = 1, px = 0, py = 0, drag = null, startX = 0;
+  const paint = () => { node.style.transform = z > 1 ? `translate(${px}px,${py}px) scale(${z})` : ""; media.classList.toggle("zoomed", z > 1); };
+  if (node.tagName === "IMG") {
+    node.addEventListener("dblclick", e => {
+      if (z > 1) { z = 1; px = py = 0; }
+      else { const r = node.getBoundingClientRect(); z = 2.4; px = (r.left + r.width / 2 - e.clientX) * 1.4; py = (r.top + r.height / 2 - e.clientY) * 1.4; }
+      paint();
+    });
+    media.addEventListener("wheel", e => {
+      if (z === 1 && !e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      z = Math.min(6, Math.max(1, z * (e.deltaY < 0 ? 1.15 : 0.87)));
+      if (z === 1) px = py = 0;
+      paint();
+    }, { passive: false });
+  }
+  media.addEventListener("pointerdown", e => { if (e.target.tagName === "VIDEO") return; drag = [e.clientX, e.clientY, px, py]; startX = e.clientX; });
+  media.addEventListener("pointermove", e => { if (!drag || z === 1) return; px = drag[2] + e.clientX - drag[0]; py = drag[3] + e.clientY - drag[1]; paint(); });
+  media.addEventListener("pointerup", e => {
+    if (drag && z === 1) { const dx = e.clientX - startX; if (dx > 70) go(i - 1); else if (dx < -70) go(i + 1); }
+    drag = null;
+  });
+  const from = Math.max(0, Math.min(i - 7, list.length - 15));
+  const film = el("div", { class: "film" }, list.slice(from, from + 15).map((x, k) =>
+    el("button", { class: from + k === i ? "on" : "", onclick: () => go(from + k), "aria-label": x.name }, miniImg(x))));
+  const where = it.dupe ? "Duplicates" : it.review ? (catBy[REVIEWS[it.review]] || {}).label : (catBy[it.cat] || {}).label;
+  const kept = it.group && it.dupe ? byId[it.group.keep] : null;
+  const row = (h, v) => v ? [el("h4", {}, h), el("p", {}, v)] : [];
+  const info = el("aside", { class: "info" },
+    row("Caption", it.caption), row("Folder", where),
+    row("Taken", it.taken ? new Date(it.taken * 1000).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" }) : "Unknown"),
+    row("Camera", [it.camera, it.lens].filter(Boolean).join(" · ")),
+    row("File", `${it.name} · ${size(it.bytes)}${it.w ? ` · ${it.w}×${it.h}` : ""}${it.duration ? " · " + mmss(it.duration) : ""}`),
+    row("Account", it.account), row("Takeout album", it.album), row("Trip or event", it.event && it.event.name),
+    row("Duplicate of", kept ? `${kept.name}${kept.account ? " in " + kept.account : ""} (kept: ${it.group.why})` : ""),
+    row("Place", it.geo ? `${it.geo[0].toFixed(3)}, ${it.geo[1].toFixed(3)}` : ""));
+  let showInfo = pref("info") === "1";
+  const infoBtn = el("button", { class: "mx-icon" + (showInfo ? " on" : ""), "aria-label": "Details (i)", onclick: () => toggleInfo() }, icon("info"));
+  const toggleInfo = () => { showInfo = !showInfo; setPref("info", showInfo ? "1" : "0"); info.hidden = !showInfo; infoBtn.classList.toggle("on", showInfo); };
+  info.hidden = !showInfo;
+  const move = DEMO ? null : el("select", { class: "mx-select", "aria-label": "Move to folder", onchange: e => {
     const key = e.target.value;
-    try { await api("/api/move", { id: it.id, key }); } catch (err) { return; }
-    it.cat = key; it.dupe = false; it.review = null; dupeIds.delete(it.id);
-    toast(`Moved to ${catBy[key].label}. It moves on disk the next time you sort.`);
-    fillStatic(); showDone(false);
-  } }, cats.filter(c => c.kind === it.kind).map(c => el("option", { value: c.key, selected: c.key === it.cat }, `${c.emoji || ""} ${c.label}`)));
+    moveItems([it], key, () => { if (opts.onChange) opts.onChange(); });
+  } }, cats.filter(c => c.kind === it.kind).map(c => el("option", { value: c.key, selected: c.key === it.cat && !it.review && !it.dupe }, `${c.emoji || ""} ${c.label}`)));
+  const close = () => { box.remove(); document.removeEventListener("keydown", lbKeys); if (opts.onChange) opts.onChange(); };
   const box = el("div", { class: "lightbox", role: "dialog", "aria-label": it.name },
-    el("div", { class: "media" }, media),
+    el("div", { class: "lbtop" }, el("span", { class: "count" }, `${fmt(i + 1)} of ${fmt(list.length)}`), el("span", { class: "spacer" }), infoBtn,
+      DEMO ? null : el("button", { class: "mx-icon", "aria-label": "Show the original in Finder", onclick: () => api("/api/open", { id: it.id }).catch(() => {}) }, icon("reveal")),
+      el("button", { class: "mx-icon", "aria-label": "Close", onclick: close }, icon("x"))),
+    media, info,
     el("div", { class: "bar" },
-      el("div", { class: "lbtext" }, el("b", {}, it.name), it.caption ? el("span", { class: "cap" }, it.caption) : null,
-        el("small", {}, [size(it.bytes), it.taken ? new Date(it.taken * 1000).toLocaleDateString() : "", it.account ? "account: " + it.account : "",
-          it.event ? it.event.name : "", it.group ? (it.dupe ? `copy of ${(byId[it.group.keep] || {}).name || "another file"} (${it.group.why})` : "") : "",
-          `${i + 1} of ${fmt(list.length)}`].filter(Boolean).join(" · "))),
-      el("span", { class: "spacer" }),
-      el("small", {}, "Move to"), move,
-      DEMO ? null : el("button", { class: "mx-btn small", onclick: () => api("/api/open", { id: it.id }) }, icon("reveal"), "Show original")),
-    el("button", { class: "nav prev", "aria-label": "Previous", onclick: () => i > 0 && lightbox(list, i - 1) }, icon("left")),
-    el("button", { class: "nav next", "aria-label": "Next", onclick: () => i < list.length - 1 && lightbox(list, i + 1) }, icon("right")),
-    el("button", { class: "mx-icon close", "aria-label": "Close", onclick: () => { box.remove(); document.removeEventListener("keydown", lbKeys); } }, icon("x")));
+      el("div", { class: "lbtext" }, el("b", {}, it.name), it.caption ? el("span", { class: "cap" }, it.caption) : null),
+      el("span", { class: "spacer" }), move ? el("small", {}, "Move to") : null, move),
+    film);
+  media.append(el("button", { class: "nav prev", "aria-label": "Previous", disabled: i === 0, onclick: () => go(i - 1) }, icon("left")),
+    el("button", { class: "nav next", "aria-label": "Next", disabled: i === list.length - 1, onclick: () => go(i + 1) }, icon("right")));
   document.querySelector(".lightbox")?.remove();
   document.removeEventListener("keydown", lbKeys);
   lbKeys = e => {
-    if (e.key === "ArrowLeft" && i > 0) lightbox(list, i - 1);
-    if (e.key === "ArrowRight" && i < list.length - 1) lightbox(list, i + 1);
-    if (e.key === "Escape") { box.remove(); document.removeEventListener("keydown", lbKeys); }
+    if (e.target.matches("input, select, textarea")) return;
+    if (e.key === "ArrowLeft") go(i - 1);
+    if (e.key === "ArrowRight") go(i + 1);
+    if (e.key === "i") toggleInfo();
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
   };
   document.addEventListener("keydown", lbKeys);
   $("overlay").append(box);
   paintIcons(box);
+  film.querySelector(".on")?.scrollIntoView({ inline: "center", block: "nearest" });
 }
-
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
 /* ---------- tools after sorting: search, accounts, clean up, trips, map, highlights, upload, privacy ---------- */
@@ -756,18 +854,131 @@ const setPref = (k, v) => { try { localStorage.setItem("snapsift." + k, v); } ca
 const live = () => items.filter(i => !i.trashed);
 const dayName = t => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 
+function setNav(id) {
+  document.querySelectorAll(".rail .nav-i").forEach(b => b.classList.toggle("on", b.id === id));
+}
 function initTools() {
-  $("q").addEventListener("keydown", e => { if (e.key === "Enter") searchFor($("q").value); });
-  $("tAccounts").onclick = accountsDialog; $("tClean").onclick = cleanupDialog; $("tTrips").onclick = eventsDialog;
-  $("tMap").onclick = mapDialog; $("tHigh").onclick = highlightsDialog; $("tShare").onclick = shareDialog; $("tPrivacy").onclick = privacyDialog;
+  const tool = (id, fn, needsDone = true) => $(id).onclick = () => {
+    if (needsDone && (mode !== "done" || DEMO)) return toast(DEMO ? "This is the demo. Run ./start.sh to use it on your photos." : "Sort a folder first, then this opens.");
+    setNav(id); fn();
+  };
+  tool("tLibrary", () => { closeAll(); $("app").scrollTo({ top: 0, behavior: "smooth" }); }, false);
+  tool("tSearch", () => palette(), false);
+  tool("tAccounts", accountsDialog); tool("tClean", () => cleanupDialog()); tool("tTrips", eventsDialog); tool("tMap", mapDialog);
+  tool("tHigh", highlightsDialog); tool("tShare", shareDialog); tool("tPrivacy", privacyDialog, false);
+  $("q").onclick = () => palette();
+  $("btnReplay").onclick = () => replay();
+  $("chipD").onclick = () => mode === "done" && !DEMO ? cleanupDialog("dupes") : null;
+  $("chipS").onclick = () => mode === "done" && !DEMO ? cleanupDialog("dupes") : null;
   $("jobstop").innerHTML = svg("stop");
   $("jobstop").onclick = () => api("/api/stop", {}).then(() => toast("Stopping…")).catch(() => {});
-  paintIcons($("tools"));
+  if (!/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)) $("q").querySelector("kbd").textContent = "Ctrl K";
+  paintIcons();
   addEventListener("keydown", e => {
-    if (e.key === "/" && mode === "done" && !e.target.matches("input, textarea, select") && !$("overlay").children.length) { e.preventDefault(); $("q").focus(); }
+    const typing = e.target.matches("input, textarea, select");
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); palette(); return; }
+    if (typing || document.querySelector(".lightbox")) return;
+    if (e.key === "/" && !$("overlay").children.length) { e.preventDefault(); palette(); }
+    if (e.key === "?" && !$("overlay").children.length) { e.preventDefault(); shortcutsDialog(); }
   });
 }
 
+/* ---------- command palette (⌘K) ---------- */
+function fuzzy(text, q) {
+  text = text.toLowerCase();
+  const i = text.indexOf(q);
+  if (i >= 0) return 100 - i;
+  let t = 0;
+  for (const ch of q) { t = text.indexOf(ch, t); if (t < 0) return -1; t++; }
+  return 10;
+}
+function palette(initial = "") {
+  const input = el("input", { placeholder: "Search photos, folders, trips and tools…", value: initial, "aria-label": "Search", autocomplete: "off", spellcheck: "false" });
+  const listEl = el("div", { class: "plist", role: "listbox" });
+  let sel = 0, runs = [];
+  const done = mode === "done" && !DEMO;
+  const actions = [
+    ["Clean up duplicates, junk and private photos", "broom", () => cleanupDialog(), done],
+    ["Accounts and delete lists", "users", accountsDialog, done && S.accounts && S.accounts.length > 1],
+    ["Trips & events", "compass", eventsDialog, done], ["Map", "map", mapDialog, done], ["Highlights", "film", highlightsDialog, done],
+    ["Upload to Google Photos or Apple Photos", "upload", shareDialog, done], ["Privacy", "lock", privacyDialog, true],
+    ["Edit folders", "pencil", openFolders, true], ["New sort", "plus", newSort, mode === "done"],
+    ["Open the sorted folder in Finder", "folder", () => api("/api/open", {}).catch(() => {}), done],
+    ["Replay the sorting animation", "play", replay, mode === "done"], ["Switch light / dark", "moon", toggleTheme, true],
+    ["Keyboard shortcuts", "keyboard", shortcutsDialog, true],
+  ].filter(a => a[3]);
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    const out = [];
+    runs = [];
+    const item = (ic, label, sub, run) => {
+      const k = runs.length;
+      runs.push(run);
+      const b = el("button", { class: "it", role: "option", onclick: () => run(), onmousemove: () => { if (sel !== k) { sel = k; mark(); } } },
+        el("span", { class: "ic" }, typeof ic === "string" && ICONS[ic] ? icon(ic) : ic), el("span", {}, label), sub ? el("small", {}, sub) : null);
+      out.push(b);
+    };
+    if (q.length >= 2 && mode === "done") {
+      const words = q.split(/\s+/);
+      const hits = live().filter(it => words.every(w => haystack(it).includes(w)));
+      if (hits.length) {
+        out.push(el("div", { class: "grp" }, `Photos · ${fmt(hits.length)}`));
+        out.push(el("div", { class: "thumbs" }, hits.slice(0, 16).map((it, k) =>
+          el("button", { "aria-label": it.name, title: it.caption || it.name, onclick: () => { closeAll(); lightbox(hits, k); } }, el("img", { src: it.src, alt: "", loading: "lazy" })))));
+        item("search", `Show all ${fmt(hits.length)} results for “${q}”`, "↵", () => searchFor(q));
+      }
+    }
+    const folders = mode === "done" ? cats.concat(catBy._dupes, catBy._private, catBy._junk, catBy._unsure)
+      .map(c => ({ c, s: q ? fuzzy(c.label, q) : 1 })).filter(x => x.s >= 0 && (x.c.landed || []).length).sort((a, b) => b.s - a.s).slice(0, q ? 6 : 4) : [];
+    if (folders.length) {
+      out.push(el("div", { class: "grp" }, "Folders"));
+      folders.forEach(({ c }) => item(c.emoji || "📁", c.label, fmt((c.landed || []).length), () => openFolder(c)));
+    }
+    const evs = mode === "done" ? events.map(e => ({ e, s: q ? fuzzy(e.name, q) : -1 })).filter(x => x.s >= 0).slice(0, 5) : [];
+    if (evs.length) {
+      out.push(el("div", { class: "grp" }, "Trips & events"));
+      evs.forEach(({ e }) => item(e.kind === "trip" ? "🧭" : "🎉", e.name, fmt(e.ids.length), () => browse(e.name, e.ids.map(i => byId[i]).filter(Boolean))));
+    }
+    const acts = actions.map(a => ({ a, s: q ? fuzzy(a[0], q) : 1 })).filter(x => x.s >= 0).sort((a, b) => b.s - a.s);
+    if (acts.length) {
+      out.push(el("div", { class: "grp" }, "Actions"));
+      acts.forEach(({ a }) => item(a[1], a[0], null, () => { closeAll(); a[2](); }));
+    }
+    if (!out.length) out.push(el("div", { class: "empty" }, mode === "done" ? "Nothing matches." : "Sort a folder first to search your photos."));
+    listEl.replaceChildren(...out);
+    paintIcons(listEl);
+    sel = Math.min(sel, Math.max(0, runs.length - 1));
+    mark();
+  };
+  const mark = () => {
+    const its = listEl.querySelectorAll(".it");
+    its.forEach((b, k) => b.classList.toggle("on", k === sel));
+    its[sel]?.scrollIntoView({ block: "nearest" });
+  };
+  input.oninput = () => { sel = 0; render(); };
+  input.onkeydown = e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(runs.length - 1, sel + 1); mark(); }
+    if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); mark(); }
+    if (e.key === "Enter" && runs[sel]) { e.preventDefault(); runs[sel](); }
+  };
+  setNav("tSearch");
+  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
+    el("div", { class: "palette", role: "dialog", "aria-label": "Search" },
+      el("div", { class: "pin" }, icon("search"), input, el("kbd", {}, "esc")), listEl,
+      el("div", { class: "pfoot" }, el("span", {}, "↑↓ move"), el("span", {}, "↵ open"), el("span", {}, "esc close"), el("span", {}, "? shortcuts")))));
+  render();
+  input.focus();
+}
+
+function shortcutsDialog() {
+  const k = (keys, what) => [el("span", {}, ...keys.map(x => el("kbd", {}, x))), el("span", {}, what)];
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  dialog("Keyboard shortcuts", [el("div", { class: "keys" },
+    k([mac ? "⌘" : "Ctrl", "K"], "Search photos, folders and tools"), k(["/"], "Search too"), k(["?"], "This list"),
+    k(["←", "→"], "Previous / next photo"), k(["i"], "Photo details"), k(["Double-click"], "Zoom in on a photo; drag to look around"),
+    k(["Shift", "click"], "Select a range of photos"), k([mac ? "⌘" : "Ctrl", "A"], "Select everything in a folder"),
+    k(["Space"], "Replay the animation"), k(["Esc"], "Close"))]);
+}
 function dialog(title, body, foot, cls = "") {
   overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
     el("div", { class: "fb-dialog " + cls, role: "dialog", "aria-label": typeof title === "string" ? title : "" },
@@ -786,28 +997,95 @@ function confirmBox(title, lines, ok, danger) {
 }
 
 /* a grid of photos, like a folder */
-function browse(title, list, opts = {}) {
+function browse(title, source, opts = {}) {
+  const get = typeof source === "function" ? source : () => source;
+  let list = get(), shown = 120, last = -1;
+  const sel = new Set();
   const grid = el("div", { class: "browse" });
-  let shown = 0;
-  const more = () => {
-    grid.querySelector(".more")?.remove();
-    const from = shown;
-    list.slice(from, from + 120).forEach((it, k) => grid.append(el("button", { onclick: () => lightbox(list, from + k), "aria-label": it.name, title: it.caption || it.name },
-      el("img", { src: it.src, alt: "", loading: "lazy" }),
-      it.kind === "video" ? el("span", { class: "vid" }, "▶ " + (it.duration ? Math.round(it.duration) + "s" : "video")) : null,
-      opts.badge ? el("span", { class: "badge" }, opts.badge(it)) : null)));
-    shown += 120;
-    if (shown < list.length) grid.append(el("button", { class: "mx-btn more", onclick: more }, `Show ${fmt(Math.min(120, list.length - shown))} more`));
+  const count = el("b");
+  const mover = el("select", { class: "mx-select", "aria-label": "Move the selected files to" });
+  const bar = el("div", { class: "selbar", role: "region", "aria-label": "Selection" }, count, mover,
+    el("button", { class: "mx-btn small", onclick: () => { list.forEach(x => sel.add(x.id)); paintSel(); } }, "Select all"),
+    el("button", { class: "mx-btn small", onclick: () => { sel.clear(); paintSel(); } }, "Clear"));
+  mover.onchange = () => {
+    const key = mover.value;
+    if (!key) return;
+    const its = [...sel].map(id => byId[id]).filter(x => x && catBy[key] && catBy[key].kind === x.kind);
+    sel.clear();
+    moveItems(its, key, refresh);
+    refresh();
   };
-  more();
-  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
-    el("div", { class: "fb-dialog wide", role: "dialog", "aria-label": title },
-      el("div", { class: "fb-head" }, el("h2", {}, title, el("span", { class: "mx-count" }, fmt(list.length))),
-        el("div", { class: "acts" }, ...(opts.actions || []), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x")))),
-      opts.note ? el("p", { class: "browse-note" }, opts.note) : null,
-      list.length ? grid : el("p", { class: "mx-empty", style: "padding:22px" }, opts.empty || "Nothing here."))));
+  function refresh() { list = get(); render(); paintSel(); }
+  function paintSel() {
+    grid.classList.toggle("selecting", sel.size > 0);
+    bar.classList.toggle("on", sel.size > 0);
+    count.textContent = `${fmt(sel.size)} selected`;
+    grid.querySelectorAll(".tile").forEach(t => t.classList.toggle("sel", sel.has(+t.dataset.id)));
+    const kinds = new Set([...sel].map(id => (byId[id] || {}).kind));
+    mover.replaceChildren(el("option", { value: "" }, "Move to…"),
+      ...cats.filter(c => kinds.has(c.kind)).map(c => el("option", { value: c.key }, `${c.emoji || ""} ${c.label}`)));
+  }
+  function toggle(idx, range) {
+    const ids = range && last >= 0 ? list.slice(Math.min(last, idx), Math.max(last, idx) + 1).map(x => x.id) : [list[idx].id];
+    const on = !sel.has(list[idx].id);
+    ids.forEach(id => on ? sel.add(id) : sel.delete(id));
+    last = idx;
+    paintSel();
+  }
+  function render() {
+    grid.replaceChildren(...list.slice(0, shown).map((it, k) => el("button", { class: "tile", "data-id": it.id, style: `--i:${k}`, "aria-label": it.name, title: it.caption || it.name,
+      onclick: e => {
+        if (!DEMO && (e.target.closest(".pick") || sel.size || e.shiftKey || e.metaKey || e.ctrlKey)) return toggle(k, e.shiftKey);
+        lightbox(list, k, { onChange: refresh });
+      } },
+      DEMO ? null : el("span", { class: "pick", "aria-hidden": "true" }, icon("check")),
+      el("img", { src: it.src, alt: "", loading: "lazy" }),
+      it.kind === "video" ? el("span", { class: "vid" }, "▶ " + (it.duration ? mmss(it.duration) : "video")) : null,
+      opts.badge ? el("span", { class: "badge" }, opts.badge(it)) : null)));
+    if (shown < list.length) grid.append(el("button", { class: "mx-btn more", onclick: () => { shown += 240; render(); paintSel(); } }, `Show ${fmt(Math.min(240, list.length - shown))} more`));
+    paintIcons(grid);
+    head.querySelector(".mx-count").textContent = fmt(list.length);
+    empty.hidden = list.length > 0;
+  }
+  const head = el("div", { class: "fb-head" }, el("h2", {}, title, el("span", { class: "mx-count" }, fmt(list.length))),
+    el("div", { class: "acts" }, ...(opts.actions || []), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x"))));
+  const empty = el("p", { class: "mx-empty", style: "padding:22px" }, opts.empty || "Nothing here.");
+  const dlg = el("div", { class: "fb-dialog wide", role: "dialog", "aria-label": String(title) }, head,
+    opts.note ? el("p", { class: "browse-note" }, opts.note) : null, empty, grid, bar);
+  dlg.addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "a" && !e.target.matches("input, select")) { e.preventDefault(); list.forEach(x => sel.add(x.id)); paintSel(); }
+    if (e.key === "Escape" && sel.size) { e.stopPropagation(); sel.clear(); paintSel(); }
+  });
+  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() }, dlg));
+  render();
+  paintSel();
+  dlg.tabIndex = -1;
+  dlg.focus();
 }
 
+/* move one or many files, with Undo */
+async function moveItems(its, key, after) {
+  if (!its.length) return;
+  const before = its.map(it => ({ it, cat: it.cat, review: it.review, dupe: it.dupe }));
+  let ok = 0;
+  for (const it of its) {
+    try { await api("/api/move", { id: it.id, key }); } catch (e) { continue; }
+    it.cat = key; it.review = null; it.dupe = false; dupeIds.delete(it.id); it._hay = null; ok++;
+  }
+  fillStatic(); showDone(false);
+  if (after) after();
+  if (!ok) return;
+  toast(`Moved ${ok === 1 ? its[0].name : fmt(ok) + " files"} to ${catBy[key].label}. It moves on disk next time you sort.`, "Undo", async () => {
+    for (const b of before) {
+      try { await api("/api/unmove", { id: b.it.id }); } catch (e) { continue; }
+      Object.assign(b.it, { cat: b.cat, review: b.review, dupe: b.dupe, _hay: null });
+      if (b.dupe) dupeIds.add(b.it.id);
+    }
+    fillStatic(); showDone(false);
+    if (after) after();
+    toast("Undone.");
+  });
+}
 /* ---------- background jobs: a small progress pill ---------- */
 function watchJob(label, onDone) {
   $("jobpill").hidden = false;
@@ -853,11 +1131,11 @@ function searchFor(q) {
   q = q.trim().toLowerCase();
   if (!q) return;
   const words = q.split(/\s+/);
-  const hits = live().filter(it => words.every(w => haystack(it).includes(w)));
-  browse(`“${q}”`, hits, { empty: "Nothing matches. Try fewer words, a year like 2023, a month, or a folder name.",
-    note: hits.length && !items.some(i => i.caption) ? "Searching names, folders and dates. Sort again to add Claude's captions." : null });
+  setNav("tSearch");
+  browse(`“${q}”`, () => live().filter(it => words.every(w => haystack(it).includes(w))), {
+    empty: "Nothing matches. Try fewer words, a year like 2023, a month, or a folder name.",
+    note: !items.some(i => i.caption) ? "Searching names, folders and dates. Sort again to add Claude's captions." : null });
 }
-
 /* ---------- accounts ---------- */
 function accountsDialog() {
   const accts = (report && report.accounts) || [];

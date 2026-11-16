@@ -105,6 +105,24 @@ class Server(unittest.TestCase):
         self.assertEqual(self.api("/api/move", {"id": photo["id"], "key": "../x"})[0], 400)
         self.assertEqual(self.api("/api/move", {"id": "1; rm -rf /", "key": "food"})[0], 400)
 
+    def test_03b_undo_puts_it_back_exactly(self):
+        data = os.path.join(self.home, "dashboard", "data")
+        with open(os.path.join(data, "meta.json")) as f:
+            meta = json.load(f)
+        with open(os.path.join(data, "labels.json")) as f:
+            labels = json.load(f)
+        pid = next(int(k) for k, v in meta.items() if v.get("review") == "private")
+        before = (labels[str(pid)], meta[str(pid)]["review"])
+        self.assertEqual(self.api("/api/move", {"id": pid, "key": "food"})[0], 200)
+        self.assertEqual(self.api("/api/move", {"id": pid, "key": "travel"})[0], 200)   # moved twice
+        self.assertEqual(self.api("/api/unmove", {"id": pid})[0], 200)
+        with open(os.path.join(data, "meta.json")) as f:
+            meta = json.load(f)
+        with open(os.path.join(data, "labels.json")) as f:
+            labels = json.load(f)
+        self.assertEqual((labels[str(pid)], meta[str(pid)]["review"]), before)       # back in Private, not just "unmoved"
+        self.assertEqual(self.api("/api/unmove", {"id": pid})[0], 400)
+
     def test_04_file_serving(self):
         s, h, b = self.req("GET", "/api/file/0")
         self.assertEqual(s, 200)
