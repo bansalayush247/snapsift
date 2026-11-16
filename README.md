@@ -4,6 +4,10 @@ Point Claude at your camera roll, or at several Google accounts' worth of photos
 
 Based on [claude-photo-sorter](https://github.com/kairothq/claude-photo-sorter) by Divy Kairoth (MIT).
 
+![The dashboard sorting a camera roll](docs/preview.gif)
+
+*The demo uses drawn placeholder images, not real photos. It was recorded with the original design; Snapsift adds a tools bar (search, accounts, clean up, trips, map, highlights, upload, privacy) and the review folders.*
+
 - **Sorts** photos and videos into folders like Selfies, Food, Travel, Screenshots, Talking heads and Screen recordings. Use the standard folders or make your own.
 - **Several Google accounts at once.** Put one Takeout export per account in one folder. Duplicates are found across all of them, your main account's copy is always kept, and every other account gets a **delete list**, plus a storage report per account.
 - **Duplicates done right:** identical copies, "storage saver" copies, bursts (it keeps the sharpest) and re-saved screenshots. Takeout's `-edited` copies are your edits, not duplicates, so they're never flagged.
