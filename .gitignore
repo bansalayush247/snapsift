@@ -3,7 +3,10 @@ dashboard/data/
 dashboard/demo/
 dashboard/peek/
 work/
+secrets/
+config/
 .env
+*.token.json
 .venv/
 __pycache__/
 .DS_Store

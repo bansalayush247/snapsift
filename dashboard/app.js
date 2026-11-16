@@ -1,4 +1,5 @@
-/* Photo sorter dashboard. Plain JS, no build step.
+/* Snapsift dashboard. Plain JS, no build step. Everything shown comes from this computer's own server;
+   names and captions are only ever set as text (never as HTML), because they can come from photos.
    States: setup (choose folders) -> running (live sort) -> done (results, replay).
    ?demo   the fake camera roll in demo/      ?d=20  replay length in seconds      ?auto  replay by itself */
 const params = new URLSearchParams(location.search);
@@ -40,6 +41,16 @@ const ICONS = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  broom: '<path d="m13 11 9-9"/><path d="M14.6 12.6c.8.8.9 2.1.2 3L10 22l-8-8 6.4-4.8c.9-.7 2.2-.6 3 .2Z"/><path d="m6.8 10.4 6.8 6.8"/>',
+  compass: '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
+  map: '<polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" x2="9" y1="3" y2="18"/><line x1="15" x2="15" y1="6" y2="21"/>',
+  film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  stop: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
+  minus: '<path d="M5 12h14"/>',
 };
 const svg = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`;
 const icon = n => { const s = el("span", { "data-icon": n }); s.innerHTML = svg(n); return s; };
@@ -61,8 +72,10 @@ $("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "
 /* ---------- state ---------- */
 let S = {};                                 // server state
 let mode = "loading";                       // setup | running | done
-let cats = [], catBy = {}, items = [], byId = {}, dupeIds = new Set(), labels = {};
-const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "claude", sample: false, typing: null };
+let cats = [], catBy = {}, items = [], byId = {}, dupeIds = new Set(), labels = {}, events = [], report = null;
+const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "claude", sample: false, typing: null,
+  accounts: false, model: "sonnet", layout: "flat", fix_dates: true, albums: true, second_look: true };
+const REVIEWS = { dupe: "_dupes", private: "_private", junk: "_junk", unsure: "_unsure" };
 let tiles = [], run = "idle", order = [], released = 0, landed = 0, t0 = 0;
 const queue = [], flown = new Set();
 const stats = { photos: 0, videos: 0, dupes: 0, saved: 0 };
@@ -80,14 +93,26 @@ function setCats(c) {
   cats = c || [];
   catBy = Object.fromEntries(cats.map(x => [x.key, x]));
   catBy._dupes = { key: "_dupes", label: "Duplicates", emoji: "🗂️", kind: "review" };
+  catBy._private = { key: "_private", label: "Private", emoji: "🔒", kind: "review" };
+  catBy._junk = { key: "_junk", label: "Junk", emoji: "🗑️", kind: "review" };
+  catBy._unsure = { key: "_unsure", label: "Not sure", emoji: "🤔", kind: "review" };
   $("k-ftotal").textContent = cats.length;
 }
 async function loadLibrary(withLabels) {
-  const [inv, lab, dupes, src] = await Promise.all(["inventory.json", "labels.json", "dupes.json", "source.json"].map(getJSON));
+  const [inv, lab, dupes, src, meta, ev, rep, trashed] = await Promise.all(
+    ["inventory.json", "labels.json", "dupes.json", "source.json", "meta.json", "events.json", "report.json", "trashed.json"].map(getJSON));
   dupeIds = new Set((dupes || []).flatMap(g => g.dupes));
   labels = withLabels && lab ? lab : {};
-  items = (inv || []).map(r => ({ ...r, cat: labels[r.id], dupe: dupeIds.has(r.id),
-    mini: `${BASE}mini/${r.id}.jpg`, src: `${BASE}thumbs/${r.id}.jpg` }));
+  events = ev || []; report = rep;
+  const keptBy = {}; (dupes || []).forEach(g => g.dupes.forEach(d => keptBy[d] = g));
+  const inEvent = {}; events.forEach(e => e.ids.forEach(i => inEvent[i] = inEvent[i] || e));
+  const gone = new Set(trashed || []);
+  items = (inv || []).map(r => {
+    const m = withLabels && meta ? meta[r.id] || {} : {};
+    return { ...r, cat: labels[r.id], dupe: dupeIds.has(r.id), review: m.review && m.review !== "dupe" ? m.review : null,
+      caption: m.c || "", flags: m.f || "", group: keptBy[r.id] || null, event: inEvent[r.id] || null, trashed: gone.has(r.id),
+      mini: `${BASE}mini/${r.id}.jpg`, src: `${BASE}thumbs/${r.id}.jpg` };
+  });
   byId = Object.fromEntries(items.map(it => [it.id, it]));
   return { inv, lab, src };
 }
@@ -109,27 +134,31 @@ function setHeader() {
   $("total").textContent = fmt(items.length);
   $("btnOpen").hidden = !(mode === "done" && S.sorted);
   $("btnNew").hidden = mode !== "done";
+  $("tools").hidden = mode !== "done" || DEMO;
+  $("tAccounts").hidden = !(S.accounts && S.accounts.length > 1);
   $("k-checked-s").textContent = items.length && mode !== "setup" ? size(items.reduce((s, r) => s + r.bytes, 0)) + " in total" : "photos & videos";
   document.body.dataset.mode = mode;
 }
 
 /* ---------- folder cards ---------- */
 function card(c) {
-  const wide = c.key === "_dupes";
-  const e = el("button", { class: "card" + (wide ? " wide review" : ""), onclick: () => mode === "setup" ? null : openFolder(c) },
+  const wide = c.key === "_dupes", review = c.kind === "review";
+  const e = el("button", { class: "card" + (wide ? " wide" : "") + (review ? " review" : ""), onclick: () => mode === "setup" ? null : openFolder(c) },
     el("div", { class: "ch" }, el("span", {}, c.emoji || "📁"), el("span", { class: "name" }, c.label), el("span", { class: "mx-count" }, "0")),
-    el("div", { class: "grid" }, Array.from({ length: wide ? 24 : 12 }, () => el("div", { class: "slot" }))));
+    el("div", { class: "grid" }, Array.from({ length: wide ? 24 : review ? 4 : 12 }, () => el("div", { class: "slot" }))));
   Object.assign(c, { el: e, badge: e.querySelector(".mx-count"), slots: [...e.querySelectorAll(".slot")], queued: 0, landed: [] });
   return e;
 }
 function buildCards() {
   $("photos").replaceChildren(...cats.filter(c => c.kind === "photo").map(card));
-  $("videos").replaceChildren(...cats.filter(c => c.kind === "video").map(card), card(catBy._dupes));
+  $("videos").replaceChildren(...cats.filter(c => c.kind === "video").map(card), card(catBy._dupes),
+    el("div", { class: "review-row" }, card(catBy._private), card(catBy._junk), card(catBy._unsure)));
   Object.assign(stats, { photos: 0, videos: 0, dupes: 0, saved: 0 });
   released = landed = 0;
   flown.clear();
 }
-const targetOf = it => it.dupe ? catBy._dupes : (catBy[it.cat] || catBy._dupes);
+const targetOf = it => it.dupe ? catBy._dupes : it.review ? catBy[REVIEWS[it.review]] : (catBy[it.cat] || catBy._unsure);
+const inFolder = (c, i) => c.key === "_dupes" ? i.dupe : c.key.startsWith("_") ? !i.dupe && REVIEWS[i.review] === c.key : !i.dupe && !i.review && i.cat === c.key;
 
 /* ---------- sphere ---------- */
 let rot = 0;
@@ -210,7 +239,7 @@ function fillStatic() {  // results without animation
   buildCards();
   tiles.forEach(t => { t.alive = false; t.el.style.opacity = 0; });
   items.forEach(it => { flown.add(it.id); released++; land(it, targetOf(it), false); });
-  cats.concat(catBy._dupes).forEach(c => {
+  cats.concat(catBy._dupes, catBy._private, catBy._junk, catBy._unsure).forEach(c => {
     const recent = c.landed.slice(-c.slots.length).reverse();
     c.slots.forEach((s, i) => s.replaceChildren(...(recent[i] ? [miniImg(recent[i])] : [])));
   });
@@ -223,7 +252,12 @@ function showDone(celebrateNow) {
   if (celebrateNow) { countUp($("bigN"), items.length, 900); confetti(); } else $("bigN").textContent = fmt(items.length);
   setPill("live", "Sorted");
 }
-function celebrate() { run = "idle"; finishing = false; mode = "done"; setHeader(); renderPanel(); showDone(true); }
+function celebrate() {
+  const wasLive = run === "live";
+  run = "idle"; finishing = false; mode = "done"; setHeader(); renderPanel();
+  if (wasLive) fillStatic();  // review folders and hand moves are only known at the end
+  showDone(true);
+}
 
 /* ---------- replay (after sorting, for recording) ---------- */
 function replay() {
@@ -294,17 +328,22 @@ function phaseEstimates(files, bytes, scan = true) {
     scan: scan ? 4 + files * 0.025 + bytes / 1e9 * 9 : 0,
     dupes: 2 + Math.pow(files / 1000, 2) * 4,
     label: 12 + files * 0.012 + Math.ceil(batches / 4) * 14,
+    events: 1 + files * 0.001,
     apply: 2 + files * 0.018,
+    report: 1 + files * 0.001,
   };
 }
-const NAMES = { scan: "Looking at every file", dupes: "Finding duplicates", label: "Claude is sorting your photos", apply: "Building your folders" };
+const NAMES = { scan: "Looking at every file", dupes: "Finding duplicates", label: "Claude is sorting your photos", events: "Finding trips & events",
+  apply: "Building your folders", report: "Writing the clean-up report", highlights: "Making highlights", events_name: "Claude is naming trips",
+  google_login: "Waiting for Google sign-in", google_upload: "Uploading to Google Photos", apple_import: "Importing into Apple Photos",
+  trash: "Moving duplicates to the Trash" };
 function overallProgress() {
   const j = S.job || {}; if (!j.phases || !j.phases.length) return 0;
-  const est = runEstimates(), total = j.phases.reduce((s, p) => s + est[p], 0) || 1;
+  const est = runEstimates(), total = j.phases.reduce((s, p) => s + (est[p] || 1), 0) || 1;
   let done = 0;
   for (const p of j.phases) {
-    if (p === j.phase) { done += est[p] * (j.total ? j.done / j.total : 0); break; }
-    done += est[p];
+    if (p === j.phase) { done += (est[p] || 1) * (j.total ? j.done / j.total : 0); break; }
+    done += est[p] || 1;
   }
   return j.phase === "done" ? 1 : Math.min(1, done / total);
 }
@@ -319,7 +358,7 @@ function remaining() {
       const spent = (j.now - j.phase_started), frac = j.total ? j.done / j.total : 0;
       const guess = frac > 0.15 ? spent / frac - spent : est[p] - spent;
       left += Math.max(2, guess);
-    } else if (seen) left += est[p];
+    } else if (seen) left += est[p] || 1;
   }
   return left;
 }
@@ -359,7 +398,12 @@ function setupCard() {
   const pk = pick.peek;
   box.append(el("div", { class: "q done" }, el("span", { class: "n" }, icon("check")), el("div", {},
     el("h3", {}, "Photos"), el("div", { class: "picked", title: pick.source }, icon("folder"), el("span", {}, tilde(pick.source))),
-    pk ? el("p", { class: "meta" }, `${fmt(pk.photos)} photos · ${fmt(pk.videos)} videos · ${size(pk.bytes)}`) : el("p", { class: "meta" }, "Counting…")),
+    pk ? el("p", { class: "meta" }, `${fmt(pk.photos)} photos · ${fmt(pk.videos)} videos · ${size(pk.bytes)}`) : el("p", { class: "meta" }, "Counting…"),
+    pk && pk.subfolders && pk.subfolders.length > 1 ? el("label", { class: "check-row acct" },
+      el("input", { type: "checkbox", checked: pick.accounts, onchange: e => { pick.accounts = e.target.checked; renderPanel(); } }),
+      el("span", {}, el("b", {}, "Each subfolder is a different account"), el("small", {},
+        pk.subfolders.slice(0, 6).map(x => x.name).join(", ") + (pk.subfolders.length > 6 ? "…" : "") +
+        (pick.accounts ? ". Duplicates across accounts get a delete list per account." : "")))) : null),
     el("button", { class: "linkish", onclick: () => { pick.source = pick.peek = pick.dest = null; pick.typing = null; resetStageForSetup(); renderPanel(); } }, "Change")));
 
   // 2. where to save
@@ -427,7 +471,20 @@ function advancedBox(files) {
     lab("claude", "Claude", "Uses your Claude plan. No key needed."),
     lab("jev", "Jev by TypeSafe ", S.jev_key ? `Fast image model, billed per file: about ${fmt(files * TOKENS_PER_FILE)} tokens.` : "Needs JEV_KEY=your-key in a .env file in this folder.",
       el("span", { class: "paid" }, "PAID")),
+    pick.labeler === "claude" ? el("div", { class: "segrow" }, el("span", {}, "Claude model"), seg("model", [["haiku", "Haiku · fastest"], ["sonnet", "Sonnet"], ["opus", "Opus · most careful"]])) : null,
+    el("h4", {}, "Folders on disk"),
+    el("div", { class: "segrow" }, el("span", {}, "Inside each folder"), seg("layout", [["flat", "Just files"], ["year", "By year"], ["month", "By month"]])),
+    toggle("fix_dates", "Fix dates on the copies", "Puts the real date taken back, so they sort right if you upload them again."),
+    toggle("albums", "Albums for trips & events", "Extra copies in Albums/. On a Mac they take no space."),
+    toggle("second_look", "Second look at unsure photos", "Claude looks again, larger, at the ones it wasn't sure about."),
     el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: pick.sample, onchange: e => { pick.sample = e.target.checked; renderPanel(); } }), "Try 200 random files first"));
+}
+function seg(key, opts) {
+  return el("div", { class: "mx-seg" }, opts.map(([v, t]) => el("button", { "aria-pressed": pick[key] === v, onclick: () => { pick[key] = v; renderPanel(); } }, t)));
+}
+function toggle(key, title, text) {
+  return el("label", { class: "check-row tog" }, el("input", { type: "checkbox", checked: pick[key], onchange: e => { pick[key] = e.target.checked; } }),
+    el("span", {}, el("b", {}, title), el("small", {}, text)));
 }
 
 async function saveCats(next) {
@@ -450,6 +507,7 @@ async function choose(key, path) {
     pick.peek = null; pick.dest = null; renderPanel(); setHeader();
     try { pick.peek = await api("/api/peek", { source: path }); pick.source = pick.peek.source; }
     catch (e) { pick.source = null; renderPanel(); return; }
+    pick.accounts = !!pick.peek.accounts_likely;
     if (!pick.peek.photos && !pick.peek.videos) { toast("No photos or videos in that folder."); pick.source = null; }
     else buildSphere(pick.peek.previews.map(u => () => el("img", { src: u, alt: "" })));
   }
@@ -482,7 +540,8 @@ async function startSorting() {
   }
   if (pick.labeler === "claude" && S.claude_cli === false) return toast("Claude Code isn't installed on this computer. Install it, or pick Jev under Advanced.");
   try {
-    S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0 });
+    S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0,
+      accounts: pick.accounts, model: pick.model, layout: pick.layout, fix_dates: pick.fix_dates, albums: pick.albums, second_look: pick.second_look });
   } catch (e) { return; }
   runInfo = { files: pick.sample ? Math.min(200, files) : files, bytes: pick.peek ? pick.peek.bytes * (pick.sample ? Math.min(1, 200 / Math.max(1, files)) : 1) : 0 };
   beginRunning();
@@ -531,10 +590,12 @@ async function pollRun() {
   renderPanel();
   if (!j.running) {
     clearInterval(monitor);
+    const byIdOld = byId;
     if (j.code !== 0) { setPill(null, "Stopped"); toast("Sorting stopped. See the details in the panel."); return; }
     // final labels (with any hand moves), then let the rest fly in
-    const final = await getJSON("labels.json") || {};
-    items.forEach(it => { if (final[it.id]) it.cat = final[it.id]; if (!flown.has(it.id) && !queue.includes(it)) queue.push(it); });
+    await loadLibrary(true);  // final labels, review folders, captions, trips
+    queue.length = 0;  // the waiting ones fly with their final folder
+    items.forEach(it => { it.tile = (byIdOld[it.id] || {}).tile; if (!flown.has(it.id)) queue.push(it); });
     finishing = true;
     if (landed >= items.length) celebrate();
   }
@@ -545,7 +606,7 @@ function runCard() {
   const steps = (j.phases || []).map(p => {
     const idx = j.phases.indexOf(p), cur = j.phases.indexOf(j.phase);
     const state = j.phase === "done" || idx < cur ? "ok" : p === j.phase ? (failed ? "bad" : "now") : "";
-    return el("li", { class: state }, state === "ok" ? icon("check") : el("i", {}), { scan: "Scan", dupes: "Duplicates", label: "Label", apply: "Folders" }[p]);
+    return el("li", { class: state }, state === "ok" ? icon("check") : el("i", {}), { scan: "Scan", dupes: "Duplicates", label: "Label", events: "Trips", apply: "Folders", report: "Report" }[p] || p);
   });
   const pct = j.total ? Math.round(j.done / j.total * 100) : 0;
   return el("div", { class: "run" },
@@ -554,7 +615,8 @@ function runCard() {
     el("div", { class: "pbar" }, el("i", { style: `width:${failed ? 100 : pct}%` })),
     el("ol", { class: "phases" }, steps),
     failed ? el("pre", { class: "log" }, (j.log || []).slice(-8).join("\n")) : null,
-    failed ? el("button", { class: "mx-btn small solid", onclick: startSorting }, "Try again") : null);
+    failed ? el("button", { class: "mx-btn small solid", onclick: startSorting }, "Try again") : null,
+    j.running ? el("button", { class: "linkish stop", onclick: () => api("/api/stop", {}).then(() => toast("Stopping… finished batches are kept.")).catch(() => {}) }, "Stop") : null);
 }
 function paintTimer() {
   const t = $("timer"); if (!t || !S.job || !S.job.started) return;
@@ -577,7 +639,7 @@ function confirmPaid(n) {
         el("div", { class: "fb-head" }, el("h2", {}, "Label with Jev"), el("button", { class: "mx-icon", onclick: () => done(false), "aria-label": "Close" }, icon("x"))),
         el("div", { class: "pc-list" }, el("div", { class: "pc-choice" },
           el("div", {}, el("b", {}, `${fmt(n)} files, about ${fmt(n * TOKENS_PER_FILE)} tokens`),
-            el("p", {}, "Sends a small 280px preview of each file to TypeSafe's Jev model, never the original. Check the per-token price on console.typesafe.ai.")),
+            el("p", {}, "Sends a small 280px preview and the file name of each file to TypeSafe's Jev model, never the original. Check the per-token price on console.typesafe.ai.")),
           el("button", { class: "mx-btn solid", onclick: () => done(true) }, "Spend tokens"))),
         el("p", { class: "pc-note" }, "Already-labelled files are skipped, so you can stop and resume."))));
   });
@@ -627,7 +689,7 @@ function openFolders() {
 }
 
 function openFolder(c) {
-  const all = items.filter(i => c.key === "_dupes" ? i.dupe : !i.dupe && i.cat === c.key);
+  const all = items.filter(i => inFolder(c, i));
   const grid = el("div", { class: "browse" });
   let shown = 0;
   const more = () => {
@@ -643,7 +705,7 @@ function openFolder(c) {
     el("div", { class: "fb-dialog wide", role: "dialog", "aria-label": c.label },
       el("div", { class: "fb-head" }, el("h2", {}, c.emoji || "📁", ` ${c.label}`, el("span", { class: "mx-count" }, fmt(all.length))),
         el("div", { class: "acts" },
-          S.sorted && !DEMO ? el("button", { class: "mx-btn small", onclick: () => api("/api/open", { folder: c.key === "_dupes" ? "_Review/duplicates" : c.label.replace(/&/g, "and").replace(/\//g, "-") }) }, icon("folder"), "Open in Finder") : null,
+          S.sorted && !DEMO ? el("button", { class: "mx-btn small", onclick: () => api("/api/open", { folder: c.key }).catch(() => {}) }, icon("folder"), "Open in Finder") : null,
           el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x")))),
       all.length ? grid : el("p", { class: "mx-empty", style: "padding:22px" }, "Nothing in this folder yet."))));
 }
@@ -656,14 +718,17 @@ function lightbox(list, i) {
   const move = el("select", { class: "mx-select", "aria-label": "Move to folder", onchange: async e => {
     const key = e.target.value;
     try { await api("/api/move", { id: it.id, key }); } catch (err) { return; }
-    it.cat = key; it.dupe = false; dupeIds.delete(it.id);
+    it.cat = key; it.dupe = false; it.review = null; dupeIds.delete(it.id);
     toast(`Moved to ${catBy[key].label}. It moves on disk the next time you sort.`);
     fillStatic(); showDone(false);
   } }, cats.filter(c => c.kind === it.kind).map(c => el("option", { value: c.key, selected: c.key === it.cat }, `${c.emoji || ""} ${c.label}`)));
   const box = el("div", { class: "lightbox", role: "dialog", "aria-label": it.name },
     el("div", { class: "media" }, media),
     el("div", { class: "bar" },
-      el("b", {}, it.name), el("small", {}, `${size(it.bytes)}${it.taken ? " · " + new Date(it.taken * 1000).toLocaleDateString() : ""} · ${i + 1} of ${fmt(list.length)}`),
+      el("div", { class: "lbtext" }, el("b", {}, it.name), it.caption ? el("span", { class: "cap" }, it.caption) : null,
+        el("small", {}, [size(it.bytes), it.taken ? new Date(it.taken * 1000).toLocaleDateString() : "", it.account ? "account: " + it.account : "",
+          it.event ? it.event.name : "", it.group ? (it.dupe ? `copy of ${(byId[it.group.keep] || {}).name || "another file"} (${it.group.why})` : "") : "",
+          `${i + 1} of ${fmt(list.length)}`].filter(Boolean).join(" · "))),
       el("span", { class: "spacer" }),
       el("small", {}, "Move to"), move,
       DEMO ? null : el("button", { class: "mx-btn small", onclick: () => api("/api/open", { id: it.id }) }, icon("reveal"), "Show original")),
@@ -683,6 +748,383 @@ function lightbox(list, i) {
 }
 
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+/* ---------- tools after sorting: search, accounts, clean up, trips, map, highlights, upload, privacy ---------- */
+let jobWatch = null;
+const pref = k => { try { return localStorage.getItem("snapsift." + k); } catch (e) { return null; } };
+const setPref = (k, v) => { try { localStorage.setItem("snapsift." + k, v); } catch (e) {} };
+const live = () => items.filter(i => !i.trashed);
+const dayName = t => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+function initTools() {
+  $("q").addEventListener("keydown", e => { if (e.key === "Enter") searchFor($("q").value); });
+  $("tAccounts").onclick = accountsDialog; $("tClean").onclick = cleanupDialog; $("tTrips").onclick = eventsDialog;
+  $("tMap").onclick = mapDialog; $("tHigh").onclick = highlightsDialog; $("tShare").onclick = shareDialog; $("tPrivacy").onclick = privacyDialog;
+  $("jobstop").innerHTML = svg("stop");
+  $("jobstop").onclick = () => api("/api/stop", {}).then(() => toast("Stopping…")).catch(() => {});
+  paintIcons($("tools"));
+  addEventListener("keydown", e => {
+    if (e.key === "/" && mode === "done" && !e.target.matches("input, textarea, select") && !$("overlay").children.length) { e.preventDefault(); $("q").focus(); }
+  });
+}
+
+function dialog(title, body, foot, cls = "") {
+  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
+    el("div", { class: "fb-dialog " + cls, role: "dialog", "aria-label": typeof title === "string" ? title : "" },
+      el("div", { class: "fb-head" }, el("h2", {}, title), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x"))),
+      el("div", { class: "fb-rows dlg" }, body),
+      foot ? el("div", { class: "fb-foot" }, foot) : null)));
+}
+
+function confirmBox(title, lines, ok, danger) {
+  return new Promise(res => {
+    const done = v => { closeAll(); res(v); };
+    dialog(title, [...lines.map(l => typeof l === "string" ? el("p", { class: "para" }, l) : l)],
+      [el("span", { class: "spacer" }), el("button", { class: "mx-btn ghost", onclick: () => done(false) }, "Cancel"),
+       el("button", { class: "mx-btn solid" + (danger ? " danger" : ""), onclick: () => done(true) }, ok)], "pc");
+  });
+}
+
+/* a grid of photos, like a folder */
+function browse(title, list, opts = {}) {
+  const grid = el("div", { class: "browse" });
+  let shown = 0;
+  const more = () => {
+    grid.querySelector(".more")?.remove();
+    const from = shown;
+    list.slice(from, from + 120).forEach((it, k) => grid.append(el("button", { onclick: () => lightbox(list, from + k), "aria-label": it.name, title: it.caption || it.name },
+      el("img", { src: it.src, alt: "", loading: "lazy" }),
+      it.kind === "video" ? el("span", { class: "vid" }, "▶ " + (it.duration ? Math.round(it.duration) + "s" : "video")) : null,
+      opts.badge ? el("span", { class: "badge" }, opts.badge(it)) : null)));
+    shown += 120;
+    if (shown < list.length) grid.append(el("button", { class: "mx-btn more", onclick: more }, `Show ${fmt(Math.min(120, list.length - shown))} more`));
+  };
+  more();
+  overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
+    el("div", { class: "fb-dialog wide", role: "dialog", "aria-label": title },
+      el("div", { class: "fb-head" }, el("h2", {}, title, el("span", { class: "mx-count" }, fmt(list.length))),
+        el("div", { class: "acts" }, ...(opts.actions || []), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x")))),
+      opts.note ? el("p", { class: "browse-note" }, opts.note) : null,
+      list.length ? grid : el("p", { class: "mx-empty", style: "padding:22px" }, opts.empty || "Nothing here."))));
+}
+
+/* ---------- background jobs: a small progress pill ---------- */
+function watchJob(label, onDone) {
+  $("jobpill").hidden = false;
+  $("jobtext").textContent = label;
+  $("jobbar").style.width = "0%";
+  clearInterval(jobWatch);
+  jobWatch = setInterval(async () => {
+    let s;
+    try { s = await fetch("/api/state", { cache: "no-store" }).then(r => r.json()); } catch (e) { return; }
+    S = s;
+    const j = s.job, pct = j.total ? j.done / j.total : 0;
+    $("jobtext").textContent = (NAMES[j.phase] || label) + (j.total ? ` · ${Math.round(pct * 100)}%` : "");
+    $("jobbar").style.width = pct * 100 + "%";
+    if (j.running) return;
+    clearInterval(jobWatch);
+    $("jobpill").hidden = true;
+    if (j.code === 0) { await refreshLibrary(); if (onDone) onDone(s); }
+    else toast((j.log || []).filter(l => l && !l.startsWith("$")).slice(-1)[0] || "That didn't work.");
+  }, 1000);
+}
+async function refreshLibrary() {
+  try { S = await api("/api/state"); } catch (e) { return; }
+  setCats(S.categories);
+  await loadLibrary(true);
+  fillStatic(); showDone(false); setHeader();
+}
+function runJob(step, args, label, onDone) {
+  return api("/api/run", { step, ...args }).then(() => { closeAll(); watchJob(label, onDone); }).catch(() => {});
+}
+
+/* ---------- search ---------- */
+function haystack(it) {
+  if (!it._hay) {
+    const d = it.taken ? new Date(it.taken * 1000) : null;
+    it._hay = [it.name, it.caption, (catBy[it.cat] || {}).label, it.account, it.album, it.event && it.event.name, it.event && it.event.auto_name,
+      it.review === "private" ? "private" : it.review, it.dupe ? "duplicate" : "", it.kind, it.camera,
+      d ? d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + " " + d.toISOString().slice(0, 7) : "undated"]
+      .filter(Boolean).join(" ").toLowerCase();
+  }
+  return it._hay;
+}
+function searchFor(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return;
+  const words = q.split(/\s+/);
+  const hits = live().filter(it => words.every(w => haystack(it).includes(w)));
+  browse(`“${q}”`, hits, { empty: "Nothing matches. Try fewer words, a year like 2023, a month, or a folder name.",
+    note: hits.length && !items.some(i => i.caption) ? "Searching names, folders and dates. Sort again to add Claude's captions." : null });
+}
+
+/* ---------- accounts ---------- */
+function accountsDialog() {
+  const accts = (report && report.accounts) || [];
+  if (accts.length < 2) return toast("Only one account here. Choose a folder with one subfolder per account and tick “different account” to compare.");
+  const main = S.main_account;
+  const kept = it => (byId[it.group.keep] || {}).account;
+  const rows = accts.map(a => el("tr", {},
+    el("td", {}, el("label", { class: "radio" }, el("input", { type: "radio", name: "main", checked: main === a.name, onchange: () => setMain(a.name) }), el("b", {}, a.name))),
+    el("td", { class: "num" }, fmt(a.files)), el("td", { class: "num" }, size(a.bytes)),
+    el("td", { class: "num" }, a.elsewhere ? `${fmt(a.elsewhere)} · ${size(a.elsewhere_bytes)}` : "—"),
+    el("td", {}, a.dupes ? el("button", { class: "mx-btn small", onclick: () => {
+      const list = live().filter(i => i.dupe && i.account === a.name && i.group);
+      browse(`Delete from ${a.name}`, list, { badge: i => "kept in " + (kept(i) || "?"),
+        note: `Each of these is also kept elsewhere. In photos.google.com, signed in to ${a.name}, search each file name and delete it. The full list with dates is in _Review/Delete lists.`,
+        actions: [el("button", { class: "mx-btn small", onclick: () => api("/api/open", { folder: "_delete" }).catch(() => {}) }, icon("folder"), "Delete lists")] });
+    } }, "Show") : null)));
+  dialog("Accounts", [
+    el("p", { class: "para" }, main ? `Copies in ${main} are always kept. The other accounts' copies of the same photo are listed to delete.`
+      : "Pick your main account: its copy of a photo is always the one kept, and the other accounts get a list of copies to delete."),
+    el("table", { class: "tbl" }, el("thead", {}, el("tr", {}, el("th", {}, "Main account"), el("th", {}, "Files"), el("th", {}, "Size"),
+      el("th", {}, "Also kept elsewhere"), el("th", {}))), el("tbody", {}, rows)),
+    el("p", { class: "meta" }, `Deleting the “also kept elsewhere” copies frees ${size(accts.reduce((s, a) => s + a.elsewhere_bytes, 0))} across your accounts. Google doesn't let apps delete photos, so you delete them in Google Photos; Trash there keeps them 60 days.`),
+  ], [el("button", { class: "mx-btn", onclick: () => api("/api/open", { folder: "_delete" }).catch(() => {}) }, icon("folder"), "Open delete lists"),
+      el("span", { class: "spacer" }), el("button", { class: "mx-btn solid", onclick: closeAll }, "Done")]);
+}
+async function setMain(name) {
+  try { await api("/api/main_account", { account: name }); } catch (e) { return; }
+  closeAll();
+  watchJob(`Making ${name} the main account`, () => { toast(`${name} is the main account now.`); accountsDialog(); });
+}
+
+/* ---------- clean up ---------- */
+function cleanupDialog(tab) {
+  const L = live();
+  const dupes = L.filter(i => i.dupe), junk = L.filter(i => i.review === "junk"), priv = L.filter(i => i.review === "private"),
+    unsure = L.filter(i => i.review === "unsure"), vids = L.filter(i => i.kind === "video").sort((a, b) => b.bytes - a.bytes).slice(0, 40);
+  const tiles = [["dupes", "🗂️", "Duplicates", dupes.length, size(dupes.reduce((s, i) => s + i.bytes, 0))],
+    ["junk", "🗑️", "Junk", junk.length, "blurry, dark, accidental"], ["private", "🔒", "Private", priv.length, "IDs, cards, passwords"],
+    ["unsure", "🤔", "Not sure", unsure.length, "pick a folder"], ["videos", "🎬", "Biggest videos", vids.length, size(vids.reduce((s, i) => s + i.bytes, 0))]];
+  tab = typeof tab === "string" ? tab : "dupes";
+  const body = el("div", { class: "clean-body" });
+  const show = t => {
+    tab = t;
+    head.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.t === t));
+    const open = (title, list, note) => () => browse(title, list, { note });
+    const parts = {
+      dupes: () => [el("p", { class: "para" }, "Extra copies of photos you also have elsewhere. The copy kept is the one in your main account, then the sharpest and largest."),
+        el("div", { class: "row" }, el("button", { class: "mx-btn", onclick: open("Duplicates", dupes, "Each tile is an extra copy; open one to see which file was kept.") }, "Look at them"),
+          S.platform === "darwin" ? el("button", { class: "mx-btn", onclick: trashFlow }, icon("trash"), "Move to Trash…") : null),
+        el("p", { class: "meta" }, "From a Google Takeout export? Deleting the downloaded copies doesn't free Google storage. Use Accounts for per-account delete lists.")],
+      junk: () => [el("p", { class: "para" }, "Very blurry or dark shots, accidental pocket photos, expired codes and chain forwards. Nothing was deleted: they're in _Review/Junk."),
+        el("button", { class: "mx-btn", onclick: open("Junk", junk, "Not junk? Open it and use Move to put it in a folder.") }, "Look at them")],
+      private: () => [el("p", { class: "para" }, "Photos of IDs, passports, cards, medical papers or passwords. Think about deleting them from cloud accounts, or keeping them in a locked album."),
+        el("button", { class: "mx-btn", onclick: open("Private", priv) }, "Look at them")],
+      unsure: () => [el("p", { class: "para" }, "Claude looked twice and still wasn't sure. Open each one and use Move to choose its folder; it's remembered next time."),
+        el("button", { class: "mx-btn", onclick: open("Not sure", unsure) }, "Sort them by hand")],
+      videos: () => [el("p", { class: "para" }, "Videos take the most space. The biggest ones:"),
+        el("div", { class: "vlist" }, vids.map(v => el("button", { class: "vrow", onclick: () => lightbox(vids, vids.indexOf(v)) },
+          el("img", { src: v.src, alt: "" }), el("span", { class: "nm" }, v.name), el("span", { class: "num" }, v.duration ? mmss(v.duration) : ""),
+          el("b", { class: "num" }, size(v.bytes)))))],
+    };
+    body.replaceChildren(...parts[t]());
+  };
+  const head = el("div", { class: "clean-tiles" }, tiles.map(([t, e, name, n, sub]) =>
+    el("button", { "data-t": t, onclick: () => show(t) }, el("span", { class: "e" }, e), el("b", {}, fmt(n)), el("span", {}, name), el("small", {}, sub))));
+  dialog("Clean up", [head, body], null, "wide-ish");
+  show(tab);
+}
+async function trashFlow() {
+  let near = false, info;
+  const load_ = async () => { try { info = await fetch(`/api/trash?near=${near ? 1 : 0}`, { cache: "no-store" }).then(r => r.json()); } catch (e) { info = null; } };
+  await load_();
+  if (!info || info.error) return toast((info && info.error) || "Couldn't list the duplicates.");
+  const render = () => dialog("Move duplicates to the Trash", [
+    el("p", { class: "para" }, `${fmt(info.files)} extra copies (${size(info.bytes)}) from your photos folder go to the Mac's Trash. The copy that's kept stays. Until you empty the Trash, Finder's “Put Back” undoes it.`),
+    el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: near, onchange: async e => { near = e.target.checked; await load_(); render(); } }),
+      "Also look-alikes (burst shots, resized copies). They are different files, so look first."),
+    info.files ? el("div", { class: "row" }, el("div", { class: "trash-strip" }, info.ids.slice(0, 14).map(i => byId[i] ? el("img", { src: byId[i].mini, alt: "" }) : null)),
+      el("button", { class: "mx-btn small", onclick: () => { const list = info.ids.map(i => byId[i]).filter(Boolean);
+        browse("Going to the Trash", list, { badge: i => "keeps " + ((byId[i.group && i.group.keep] || {}).name || "a copy"),
+          note: "Each of these goes to the Trash; the file named on it is kept.", actions: [el("button", { class: "mx-btn small", onclick: trashFlow }, "Back")] }); } },
+        `Look at all ${fmt(info.files)}`)) : null,
+    el("p", { class: "meta" }, "Each file is checked again right before: unchanged since the scan, and its kept copy still there."),
+  ], [el("span", { class: "spacer" }), el("button", { class: "mx-btn ghost", onclick: closeAll }, "Cancel"),
+      el("button", { class: "mx-btn solid danger", disabled: !info.files, onclick: () => runJob("trash", { confirm: info.files, near }, "Moving to the Trash",
+        () => toast("Done. They're in the Trash.")) }, `Move ${fmt(info.files)} to Trash`)], "pc");
+  render();
+}
+
+/* ---------- trips & events ---------- */
+function eventsDialog() {
+  if (!events.length) return toast("No trips or events found. They need photos with dates (and locations for trips).");
+  const list = el("div", { class: "evlist" }, events.slice().reverse().map(e => {
+    const its = e.ids.map(i => byId[i]).filter(Boolean);
+    return el("button", { class: "ev", onclick: () => browse(e.name, its) },
+      el("div", { class: "strip" }, its.slice(0, 4).map(i => el("img", { src: i.mini, alt: "", loading: "lazy" }))),
+      el("div", {}, el("b", {}, e.name), el("small", {}, `${e.kind === "trip" ? "🧭 Trip" : "🎉 Event"} · ${e.named ? e.auto_name.replace("Trip · ", "") + " · " : ""}${fmt(its.length)} files`)));
+  }));
+  dialog("Trips & events", [list], [
+    el("button", { class: "mx-btn", onclick: () => api("/api/open", { folder: "_albums" }).catch(() => {}) }, icon("folder"), "Open Albums"),
+    el("span", { class: "spacer" }),
+    el("button", { class: "mx-btn solid", onclick: async () => {
+      if (!await confirmBox("Name them with Claude", ["Claude gets each group's dates, a few photo captions and a rough location (rounded to about 10 km), and suggests names like “Goa beach trip”.",
+        "No photos are sent for this. It uses your Claude plan."], "Name them")) return eventsDialog();
+      runJob("events_name", {}, "Naming trips & events", () => { toast("Named. The Albums folders were renamed too."); eventsDialog(); });
+    } }, "Name them with Claude")]);
+}
+
+/* ---------- map ---------- */
+function mapDialog() {
+  const pts = live().filter(i => i.geo && !i.dupe);
+  if (!pts.length) return toast("None of these photos have a location.");
+  let useTiles = pref("osm") === "1", z = 2, cx = 0, cy = 0;
+  const wrap = el("div", { class: "map" }), tl = el("div", { class: "map-tiles" }), dl = el("div", { class: "map-dots" });
+  const attrib = el("div", { class: "map-attr" });
+  wrap.append(tl, dl, attrib);
+  const P = (lat, lon, zz) => {
+    const s = 256 * 2 ** zz, si = Math.min(.9999, Math.max(-.9999, Math.sin(lat * Math.PI / 180)));
+    return [(lon + 180) / 360 * s, (0.5 - Math.log((1 + si) / (1 - si)) / (4 * Math.PI)) * s];
+  };
+  const fit = () => {
+    const W = wrap.clientWidth || 800, H = wrap.clientHeight || 500;
+    z = 1;
+    for (let zz = 16; zz >= 1; zz--) {
+      const xs = pts.map(p => P(p.geo[0], p.geo[1], zz));
+      const w = Math.max(...xs.map(p => p[0])) - Math.min(...xs.map(p => p[0])), h = Math.max(...xs.map(p => p[1])) - Math.min(...xs.map(p => p[1]));
+      if (w < W - 120 && h < H - 120) { z = zz; break; }
+    }
+    const xs = pts.map(p => P(p.geo[0], p.geo[1], z));
+    cx = (Math.max(...xs.map(p => p[0])) + Math.min(...xs.map(p => p[0]))) / 2;
+    cy = (Math.max(...xs.map(p => p[1])) + Math.min(...xs.map(p => p[1]))) / 2;
+    draw();
+  };
+  const draw = () => {
+    const W = wrap.clientWidth, H = wrap.clientHeight, n = 2 ** z;
+    tl.replaceChildren();
+    if (useTiles) {
+      for (let tx = Math.floor((cx - W / 2) / 256); tx <= Math.floor((cx + W / 2) / 256); tx++)
+        for (let ty = Math.max(0, Math.floor((cy - H / 2) / 256)); ty <= Math.min(n - 1, Math.floor((cy + H / 2) / 256)); ty++)
+          tl.append(el("img", { src: `https://tile.openstreetmap.org/${z}/${((tx % n) + n) % n}/${ty}.png`, alt: "", draggable: "false",
+            style: `left:${tx * 256 - cx + W / 2}px;top:${ty * 256 - cy + H / 2}px` }));
+    }
+    attrib.replaceChildren(...(useTiles ? [el("a", { href: "https://www.openstreetmap.org/copyright", target: "_blank", rel: "noopener" }, "© OpenStreetMap contributors")] : []));
+    const cells = {};
+    pts.forEach(p => {
+      const [x, y] = P(p.geo[0], p.geo[1], z), sx = x - cx + W / 2, sy = y - cy + H / 2;
+      if (sx < -30 || sy < -30 || sx > W + 30 || sy > H + 30) return;
+      const k = Math.floor(sx / 46) + "," + Math.floor(sy / 46);
+      (cells[k] = cells[k] || { x: 0, y: 0, list: [] }).list.push(p);
+      cells[k].x += sx; cells[k].y += sy;
+    });
+    dl.replaceChildren(...Object.values(cells).map(c => {
+      const n_ = c.list.length, x = c.x / n_, y = c.y / n_, d = Math.min(64, 30 + Math.sqrt(n_) * 4);
+      return el("button", { class: "dot", style: `left:${x - d / 2}px;top:${y - d / 2}px;width:${d}px;height:${d}px`, "aria-label": `${n_} photos`,
+        onclick: () => {
+          const spread = new Set(c.list.map(p => p.geo.map(v => v.toFixed(3)).join())).size;
+          if (spread > 1 && z < 16) { cx += x - W / 2; cy += y - H / 2; zoom(2); } else browse(`${fmt(n_)} photos here`, c.list);
+        } }, el("img", { src: c.list[0].mini, alt: "" }), n_ > 1 ? el("span", {}, fmt(n_)) : null);
+    }));
+  };
+  const zoom = (dz, ax, ay) => {
+    const nz = Math.max(1, Math.min(18, z + dz)), W = wrap.clientWidth, H = wrap.clientHeight;
+    ax = ax ?? W / 2; ay = ay ?? H / 2;
+    const f = 2 ** (nz - z), wx = cx - W / 2 + ax, wy = cy - H / 2 + ay;
+    cx = wx * f - ax + W / 2; cy = wy * f - ay + H / 2; z = nz; draw();
+  };
+  let drag = null;
+  wrap.addEventListener("pointerdown", e => { if (e.target.closest(".dot")) return; drag = [e.clientX, e.clientY]; wrap.setPointerCapture(e.pointerId); });
+  wrap.addEventListener("pointermove", e => { if (!drag) return; cx -= e.clientX - drag[0]; cy -= e.clientY - drag[1]; drag = [e.clientX, e.clientY]; draw(); });
+  wrap.addEventListener("pointerup", () => drag = null);
+  wrap.addEventListener("wheel", e => { e.preventDefault(); const r = wrap.getBoundingClientRect(); zoom(e.deltaY < 0 ? 1 : -1, e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  const tilesBox = el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: useTiles, onchange: e => { useTiles = e.target.checked; setPref("osm", useTiles ? "1" : "0"); draw(); } }),
+    el("span", {}, "Street map", el("small", {}, " loads map pictures from OpenStreetMap; only the map area you look at is sent, never your photos")));
+  dialog(`Map · ${fmt(pts.length)} photos`, [wrap], [tilesBox, el("span", { class: "spacer" }),
+    el("button", { class: "mx-icon", "aria-label": "Zoom out", onclick: () => zoom(-1) }, icon("minus")),
+    el("button", { class: "mx-icon", "aria-label": "Zoom in", onclick: () => zoom(1) }, icon("plus")),
+    el("button", { class: "mx-btn small", onclick: fit }, "Fit")], "wide mapdlg");
+  requestAnimationFrame(fit);
+}
+
+/* ---------- highlights ---------- */
+async function highlightsDialog() {
+  const years = [...new Set(live().filter(i => i.taken).map(i => new Date(i.taken * 1000).getFullYear()))].sort((a, b) => b - a);
+  if (!years.length) return toast("No dated photos, so no years to make highlights for.");
+  const hl = S.steps && S.steps.highlights ? await getJSON("highlights.json") : null;
+  let useClaude = true, year = "";
+  const made = hl ? Object.entries(hl.years).sort((a, b) => b[0] - a[0]) : [];
+  dialog("Highlights", [
+    el("p", { class: "para" }, "For each year: the best photos (no duplicates, screenshots or documents), copied into Highlights/ with a slideshow video."
+      + (S.ffmpeg ? "" : " Install ffmpeg (brew install ffmpeg) for the video.")),
+    made.length ? el("div", { class: "hl" }, made.map(([y, v]) => el("div", { class: "hly" }, el("b", {}, y),
+      v.video ? el("video", { src: `/api/highlight/${y}`, controls: true, preload: "metadata" }) : null,
+      el("button", { class: "mx-btn small", onclick: () => browse(`Highlights ${y}`, v.ids.map(i => byId[i]).filter(Boolean)) }, `${v.ids.length} photos`)))) : null,
+    el("div", { class: "segrow" }, el("span", {}, "Year"), el("select", { class: "mx-select", onchange: e => year = e.target.value },
+      el("option", { value: "" }, "All years"), years.map(y => el("option", { value: y }, y)))),
+    el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: true, onchange: e => useClaude = e.target.checked }),
+      el("span", {}, "Let Claude pick the best", el("small", {}, " (uses your plan; otherwise the sharpest are used)"))),
+  ], [el("button", { class: "mx-btn", onclick: () => api("/api/open", { folder: "_highlights" }).catch(() => toast("Make them first.")) }, icon("folder"), "Open folder"),
+      el("span", { class: "spacer" }),
+      el("button", { class: "mx-btn solid", onclick: () => runJob("highlights", { year, local: !useClaude }, "Making highlights", () => highlightsDialog()) }, icon("film"), made.length ? "Make again" : "Make highlights")]);
+}
+
+/* ---------- upload: Google Photos, Apple Photos ---------- */
+async function shareDialog() {
+  let g = null, a = null;
+  try { g = await fetch("/api/google", { cache: "no-store" }).then(r => r.json()); } catch (e) {}
+  if (S.platform === "darwin") try { a = await fetch("/api/apple?albums=1", { cache: "no-store" }).then(r => r.json()); } catch (e) {}
+  let strip = true, albums = true, aAlbums = true;
+  const gBox = el("section", { class: "share" }, el("h3", {}, "Google Photos"));
+  if (!g || g.error && !g.configured) gBox.append(el("p", { class: "para" }, (g && g.error) || "Couldn't check Google."));
+  if (g && !g.configured) gBox.append(
+    el("p", { class: "para" }, "Upload the sorted library into one Google account, an album per folder. Google requires a free key of your own, once:"),
+    el("ol", { class: "steps" },
+      el("li", {}, "Open ", el("a", { href: "https://console.cloud.google.com/apis/library/photoslibrary.googleapis.com", target: "_blank", rel: "noopener" }, "Google Cloud console"), ", make a project and enable the Photos Library API."),
+      el("li", {}, "OAuth consent screen: External, and add your Gmail as a test user."),
+      el("li", {}, "Credentials → Create credentials → OAuth client ID → Desktop app → Download JSON."),
+      el("li", {}, "Save it as ", el("code", {}, "secrets/google_client.json"), " in the Snapsift folder, then press Check again.")),
+    el("button", { class: "mx-btn", onclick: shareDialog }, "Check again"));
+  else if (g && !g.signed_in) gBox.append(
+    el("p", { class: "para" }, "Snapsift can only add photos and make albums. It can't see, change or delete anything already in your Google Photos."),
+    el("button", { class: "mx-btn solid", onclick: () => runJob("google_login", {}, "Finish signing in in the new browser tab", () => { toast("Signed in to Google."); shareDialog(); }) }, "Sign in with Google"));
+  else if (g) gBox.append(
+    el("p", { class: "para" }, `Signed in as ${g.email || "your Google account"}. ${fmt(g.left)} of ${fmt(g.files)} files to upload (${size(g.bytes || 0)}), ${fmt(g.albums)} albums.`),
+    el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: true, onchange: e => strip = e.target.checked }),
+      el("span", {}, "Remove location before uploading", el("small", {}, " (recommended; the date stays)"))),
+    el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: true, onchange: e => albums = e.target.checked }), "Also albums for trips & events"),
+    el("div", { class: "row" },
+      el("button", { class: "mx-btn solid", disabled: !g.left, onclick: async () => {
+        if (!await confirmBox("Upload to Google Photos", [`${fmt(g.left)} files (${size(g.bytes || 0)}) go to ${g.email || "your Google account"}${strip ? ", without their location" : ", including their location"}.`,
+          "Uploads count toward that account's storage. Run it again any time: what's already up is skipped."], "Upload")) return shareDialog();
+        runJob("google_upload", { strip, albums }, "Uploading to Google Photos", () => toast("Uploaded to Google Photos."));
+      } }, g.left ? `Upload ${fmt(g.left)} files` : "All uploaded"),
+      el("button", { class: "linkish", onclick: () => api("/api/google_logout", {}).then(shareDialog).catch(() => {}) }, "Sign out")));
+  const aBox = a && !a.unsupported ? el("section", { class: "share" }, el("h3", {}, "Apple Photos"),
+    el("p", { class: "para" }, `Import the sorted copies into Photos on this Mac, an album per folder inside a “Snapsift” folder. ${fmt(a.files)} files to import.`),
+    el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: true, onchange: e => aAlbums = e.target.checked }), "Also albums for trips & events"),
+    el("button", { class: "mx-btn solid", disabled: !a.files, onclick: async () => {
+      if (!await confirmBox("Import into Apple Photos", [`This adds ${fmt(a.files)} files to your Photos library, and to iCloud Photos if that's on.`, "The first time, macOS asks to let Snapsift control Photos."], "Import")) return shareDialog();
+      runJob("apple_import", { albums: aAlbums }, "Importing into Apple Photos", () => toast("Imported into Apple Photos."));
+    } }, a.files ? `Import ${fmt(a.files)} files` : "All imported")) : null;
+  dialog("Upload", [gBox, aBox], null, "wide-ish");
+}
+
+/* ---------- privacy ---------- */
+function privacyDialog() {
+  const li = (b, t) => el("li", {}, el("b", {}, b), " ", t);
+  dialog("Privacy", [
+    el("h4", {}, "Stays on this computer"),
+    el("ul", { class: "plist" }, li("Your photos.", "Only read. The sorted folders are copies."), li("Previews, captions, labels, lists.", "In the Snapsift folder (dashboard/data and work), never uploaded or committed."),
+      li("Your home location.", "Worked out here to spot trips; never sent anywhere.")),
+    el("h4", {}, "Leaves it, only for what you start"),
+    el("ul", { class: "plist" },
+      li("Claude:", "small previews of your photos, plus each file's date, camera, name and “near/far from home”. No coordinates, no folder paths. Claude can only read the preview sheets it's given."),
+      li("Naming trips with Claude:", "dates, captions and a location rounded to about 10 km."),
+      li("Street map:", "map pictures come from OpenStreetMap for the area you look at; off unless you turn it on."),
+      li("Google Photos upload:", "the files you choose, to your account, location removed by default."),
+      li("Jev (if you pick it):", "a 280px preview and the file name of each file, to TypeSafe.")),
+    el("h4", {}, "Forget this library"),
+    el("p", { class: "para" }, "Deletes Snapsift's previews, captions, labels and lists for this library. Your photos and the sorted folders are not touched. Only the list of what was already uploaded is kept, so nothing is uploaded twice."),
+  ], [S.google && S.google.signed_in ? el("button", { class: "mx-btn", onclick: () => api("/api/google_logout", {}).then(() => toast("Signed out of Google.")).catch(() => {}) }, "Sign out of Google") : null,
+      el("span", { class: "spacer" }),
+      el("button", { class: "mx-btn solid danger", onclick: async () => {
+        if (!await confirmBox("Forget this library?", ["Snapsift's previews, captions and lists for this library are deleted. Your photos and sorted folders stay."], "Forget", true)) return privacyDialog();
+        try { await api("/api/forget", {}); } catch (e) { return; }
+        location.href = "/";
+      } }, "Forget this library")]);
+}
 
 /* ---------- start ---------- */
 function newSort() {
@@ -710,6 +1152,7 @@ async function init() {
     if (!DEMO) await loadLibrary(true);
     mode = "done"; sphereFromItems(); fillStatic(); showDone(false);
     pick.source = S.source;
+    if (!DEMO && S.job && S.job.running) watchJob(NAMES[S.job.phase] || "Working");
   } else {
     mode = "setup"; setPill(null, "Choose your photos");
   }
@@ -726,6 +1169,7 @@ $("go").onclick = sortWithClaude;
 $("btnNew").onclick = newSort;
 $("btnFolders").onclick = openFolders;
 $("btnOpen").onclick = () => api("/api/open", {}).catch(() => {});
+initTools();
 addEventListener("keydown", e => {
   if (e.target.matches("input, textarea, select") || $("overlay").children.length) return;
   if (e.code === "Space" && mode === "done") { e.preventDefault(); replay(); }

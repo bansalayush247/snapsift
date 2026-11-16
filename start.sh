@@ -1,5 +1,5 @@
 #!/bin/bash
-# Opens the photo sorter at http://127.0.0.1:8765. Safe to run again: if it's already running it just opens the page.
+# Opens Snapsift at http://127.0.0.1:8765. Safe to run again: if it's already running it just opens the page.
 #   ./start.sh          your photos
 #   ./start.sh --demo   a fake camera roll, to see what it looks like
 cd "$(dirname "$0")"
@@ -8,7 +8,7 @@ URL="http://127.0.0.1:$PORT/"
 [ "$1" = "--demo" ] && URL="${URL}?demo"
 open_page() { if command -v open >/dev/null; then open "$1"; elif command -v xdg-open >/dev/null; then xdg-open "$1"; else echo "Open $1"; fi; }
 if curl -s -o /dev/null "http://127.0.0.1:$PORT/api/state"; then
-  echo "Photo sorter is already running."
+  echo "Snapsift is already running."
   open_page "$URL"
   exit 0
 fi

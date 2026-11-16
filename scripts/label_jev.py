@@ -5,7 +5,7 @@
 
 Needs JEV_KEY (or TYPESAFE_API_KEY) in your environment or in a .env file in this repo.
 Each file is one "choice" question: a 280px preview + the folder list from categories.json.
-Only the 280px preview leaves your computer, never the original photo.
+Only the 280px preview and the file name leave your computer, never the original photo.
 """
 import base64, io, json, os, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor
